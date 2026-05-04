@@ -1,0 +1,1123 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import date
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+COMMON_SECTION_PLACEHOLDER = (
+    "二阶段待编辑：请基于完整脚本，用大模型或人工判断，挑选 0-5 句真正值得背、可迁移的表达，并同步更新 frontmatter 的 "
+    "`daily_use_sentences`；宁缺勿滥。"
+)
+DEFAULT_MATERIAL_NOTE = "这条音频由本地 Apple Speech (`SpeechAnalyzer` + `SpeechTranscriber`) 自动转写生成。建议人工复核题号、教材抬头和少量长句切分，再决定是否继续精修。"
+SHORT_CHOICE_MATERIAL_NOTE = "这条音频按短句应答题模式处理：脚本会优先保留题号与选项结构，必要时自动尝试慢速副本重转。仍建议人工顺耳确认题干与错误选项。"
+FASTER_WHISPER_MATERIAL_NOTE = "这条音频由本地 faster-whisper small (`cpu` + `int8`) 自动转写生成。它通常比 Apple Speech 更适合清晰教材对话，但仍需人工复核同音词、姓名、楼层等上下文词。"
+DEFAULT_FASTER_WHISPER_MODEL = "small"
+DEFAULT_FASTER_WHISPER_COMPUTE_TYPE = "int8"
+DIALOGUE_MATERIAL_NOTE_SUFFIX = "本稿按对话型精听内容整理；仅在文本呈现出明显问答或应答轮替时，保守标注 A：/B：。"
+
+QUESTION_CUES = (
+    "ですか",
+    "ますか",
+    "何",
+    "どこ",
+    "どちら",
+    "どのくらい",
+    "どんな",
+    "どう",
+    "いかが",
+    "いつ",
+    "誰",
+    "だれ",
+    "何時",
+    "何日",
+    "何曜日",
+    "何年",
+    "何階",
+)
+REQUEST_OR_OFFER_CUES = ("ください", "どうぞ", "いかが", "大丈夫ですか", "ましょうか", "お願いします")
+GREETING_CUES = ("はじめまして", "よろしく", "どうぞよろしく", "失礼します", "じゃ、また", "いただきます")
+RESPONSE_CUES = (
+    "はい",
+    "いいえ",
+    "ええ",
+    "あ、",
+    "ああ",
+    "そうです",
+    "そうですね",
+    "そうですか",
+    "どうも",
+    "ありがとうございます",
+    "すみません",
+    "お願いします",
+    "いただきます",
+    "わかりました",
+)
+
+
+@dataclass
+class Chunk:
+    start: float | None
+    end: float | None
+    text: str
+
+
+@dataclass
+class TranscriptionCandidate:
+    payload: dict
+    segments: list[Chunk]
+    sentences: list[str]
+    full_text: str
+    score: int
+    route_label: str
+
+
+@dataclass
+class ScriptBlock:
+    kind: str
+    label: str | None = None
+    utterances: list[str] | None = None
+    text: str | None = None
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="transcribe-listening",
+        description="Generate a Japanese listening Markdown note with Apple Speech or faster-whisper.",
+    )
+    parser.add_argument("audio_path", nargs="?")
+    parser.add_argument("--note-path")
+    parser.add_argument("--locale", default="ja-JP")
+    parser.add_argument("--title")
+    parser.add_argument("--engine", choices=["auto", "apple", "faster-whisper"], default="auto")
+    parser.add_argument("--faster-whisper-python")
+    parser.add_argument("--faster-whisper-model", default=DEFAULT_FASTER_WHISPER_MODEL)
+    parser.add_argument("--faster-whisper-compute-type", default=DEFAULT_FASTER_WHISPER_COMPUTE_TYPE)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--scan-dir")
+    return parser.parse_args()
+
+
+def listenkit_root() -> Path:
+    override = os.environ.get("LISTENKIT_ROOT")
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[3] / "ListenKit"
+
+
+def listenkit_transcribe_script_path() -> Path:
+    return listenkit_root() / "cli" / "transcribe-audio.sh"
+
+
+def invoke_listenkit(audio_path: Path, locale: str, engine: str, env_overrides: dict[str, str] | None = None) -> dict:
+    script_path = listenkit_transcribe_script_path()
+    env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(script_path),
+            "--audio-path",
+            str(audio_path),
+            "--locale",
+            locale,
+            "--engine",
+            engine,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    stdout = result.stdout.strip()
+    if result.returncode != 0 or not stdout:
+        stderr = result.stderr.strip() or stdout or f"ListenKit {engine} backend returned no output."
+        raise RuntimeError(stderr)
+
+    payload = json.loads(stdout)
+    if payload.get("error"):
+        error = payload["error"]
+        raise RuntimeError(f'{error.get("type", "error")}: {error.get("message", f"ListenKit {engine} backend failed.")}')
+    return payload
+
+
+def invoke_helper(audio_path: Path, locale: str) -> dict:
+    return invoke_listenkit(audio_path, locale, "apple")
+
+
+def invoke_faster_whisper(
+    audio_path: Path,
+    locale: str,
+    python_path: str | None = None,
+    model_name: str = DEFAULT_FASTER_WHISPER_MODEL,
+    compute_type: str = DEFAULT_FASTER_WHISPER_COMPUTE_TYPE,
+) -> dict:
+    env_overrides = {}
+    if python_path:
+        env_overrides["FASTER_WHISPER_PYTHON"] = str(Path(python_path).expanduser())
+    return invoke_listenkit(audio_path, locale, "faster-whisper", env_overrides)
+
+
+def run_ffmpeg(args: list[str]) -> None:
+    result = subprocess.run(
+        args,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip() or "ffmpeg failed."
+        raise RuntimeError(stderr)
+
+
+def resolve_note_path(audio_path: Path, note_override: str | None) -> Path | None:
+    if note_override:
+        return Path(note_override)
+
+    candidates = sorted(audio_path.parent.glob(f"{audio_path.stem}_*.md"))
+    for candidate in candidates:
+        if "_无文本待补.md" in candidate.name:
+            return candidate
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def parse_frontmatter(note_text: str) -> tuple[list[str], str]:
+    lines = note_text.splitlines()
+    if not lines or lines[0] != "---":
+        raise ValueError("Missing frontmatter start delimiter.")
+    try:
+        end_index = lines.index("---", 1)
+    except ValueError as exc:
+        raise ValueError("Missing frontmatter end delimiter.") from exc
+    return lines[1:end_index], "\n".join(lines[end_index + 1 :]).strip()
+
+
+def set_scalar(lines: list[str], key: str, value: str) -> None:
+    target = f"{key}:"
+    for idx, line in enumerate(lines):
+        if line.startswith(target):
+            lines[idx] = f"{key}: {value}"
+            return
+    lines.append(f"{key}: {value}")
+
+
+def set_list(lines: list[str], key: str, values: list[str]) -> None:
+    target = f"{key}:"
+    block = [target] + [f"  - {quote_if_needed(value)}" for value in values]
+    for idx, line in enumerate(lines):
+        if line.startswith(target):
+            end = idx + 1
+            while end < len(lines):
+                current = lines[end]
+                if current.startswith("  - ") or current.strip() == "" or current[:1] in {" ", "\t"}:
+                    end += 1
+                    continue
+                break
+            lines[idx:end] = block
+            return
+    lines.extend(block)
+
+
+def has_key(lines: list[str], key: str) -> bool:
+    target = f"{key}:"
+    return any(line.startswith(target) for line in lines)
+
+
+def quote_if_needed(value: str) -> str:
+    if not value:
+        return '""'
+    if any(token in value for token in [":", "[", "]", '"']):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
+
+
+def clean_transcript_text(text: str) -> str:
+    cleaned = text.replace("。 ", "。").replace("？ ", "？").replace("！ ", "！")
+    cleaned = cleaned.replace("  ", " ")
+    cleaned = re.sub(r"^第\s*[0-9一二三四五六七八九十]+\s*課本文[^。！？?]*[。！？?]\s*", "", cleaned)
+    cleaned = re.sub(r"^(紹介|聴解)タスクシート質問\s*", "", cleaned)
+    cleaned = re.sub(r"^\d+-\d+聞こう[。]?\s*", "", cleaned)
+    cleaned = re.sub(r"^\d+番", "", cleaned)
+    cleaned = cleaned.replace("懲戒タスクシート", "聴解タスクシート")
+    cleaned = cleaned.replace("入り口", "入口")
+    cleaned = cleaned.replace("侵入止め", "進入止め")
+    cleaned = cleaned.replace("作られています", "造られています")
+    cleaned = cleaned.replace("小さい方", "小さいほう")
+    cleaned = cleaned.replace("大きい池より", "大きい池より")
+    cleaned = cleaned.replace("静かな佇まい", "静かなたたずまい")
+    cleaned = cleaned.replace("なんだか", "何だか")
+    cleaned = cleaned.replace("朝よく行きます", "朝、よく行きます")
+    cleaned = cleaned.replace("すご。ごしやすく", "過ごしやすく")
+    cleaned = cleaned.replace("土曜の丑の日", "土用の丑の日")
+    cleaned = cleaned.replace("土曜の牛の日", "土用の丑の日")
+    cleaned = cleaned.replace("\n", "")
+    cleaned = re.sub(r"\s+", "", cleaned)
+    return cleaned.strip()
+
+
+def is_short_choice_mode(audio_path: Path) -> bool:
+    stem = audio_path.stem
+    return (
+        "実力アップ" in audio_path.as_posix()
+        or bool(re.search(r"\d+番-\d+番", stem))
+        or bool(re.fullmatch(r"\d+番", stem))
+    )
+
+
+def is_shadowing_path(audio_path: Path) -> bool:
+    return "Shadowing" in audio_path.as_posix() or "シャドーイング" in audio_path.as_posix()
+
+
+def normalize_shadowing_text(text: str) -> str:
+    cleaned = text.strip()
+    cleaned = cleaned.replace("?", "？").replace("!", "！")
+    cleaned = cleaned.replace("．", ".")
+    cleaned = re.sub(r"\s+", "", cleaned)
+    replacements = {
+        "セクション４": "セクション4",
+        "セクション 4": "セクション4",
+        "何回ですか": "何階ですか",
+        "3回です": "三階です",
+        "３回です": "三階です",
+        "奥には": "お国は",
+        "わたなべ": "渡辺",
+        "たなか": "田中",
+        "なかた": "中田",
+    }
+    for before, after in replacements.items():
+        cleaned = cleaned.replace(before, after)
+    return cleaned
+
+
+def normalize_payload_for_shadowing(payload: dict) -> dict:
+    normalized = dict(payload)
+    raw_segments = payload.get("segments", [])
+    normalized_segments = []
+    for segment in raw_segments:
+        item = dict(segment)
+        item["text"] = normalize_shadowing_text(str(segment.get("text", "")))
+        normalized_segments.append(item)
+    normalized["segments"] = normalized_segments
+    normalized["full_text"] = "\n".join(
+        str(segment.get("text", "")).strip() for segment in normalized_segments if str(segment.get("text", "")).strip()
+    )
+    return normalized
+
+
+def raw_segments_to_chunks(raw_segments: Iterable[dict]) -> list[Chunk]:
+    return [
+        Chunk(
+            start=segment.get("start"),
+            end=segment.get("end"),
+            text=str(segment.get("text", "")).strip(),
+        )
+        for segment in raw_segments
+        if str(segment.get("text", "")).strip()
+    ]
+
+
+def merge_chunks(raw_segments: Iterable[dict]) -> list[Chunk]:
+    chunks = [
+        Chunk(
+            start=segment.get("start"),
+            end=segment.get("end"),
+            text=str(segment.get("text", "")).strip(),
+        )
+        for segment in raw_segments
+        if str(segment.get("text", "")).strip()
+    ]
+    merged: list[Chunk] = []
+    buffer_text: list[str] = []
+    buffer_start: float | None = None
+    buffer_end: float | None = None
+
+    def flush() -> None:
+        nonlocal buffer_text, buffer_start, buffer_end
+        if not buffer_text:
+            return
+        text = "".join(buffer_text).strip()
+        if text:
+            merged.append(Chunk(start=buffer_start, end=buffer_end, text=text))
+        buffer_text = []
+        buffer_start = None
+        buffer_end = None
+
+    for chunk in chunks:
+        if buffer_start is None:
+            buffer_start = chunk.start
+        if buffer_end is not None and chunk.start is not None and chunk.start - buffer_end > 1.0:
+            flush()
+            buffer_start = chunk.start
+
+        buffer_text.append(chunk.text)
+        buffer_end = chunk.end
+
+        if chunk.text in {"。", "！", "？"}:
+            flush()
+
+    flush()
+    return merged
+
+
+def chunks_to_sentences(chunks: Iterable[Chunk]) -> list[str]:
+    text = "".join(chunk.text for chunk in chunks).strip()
+    text = clean_transcript_text(text)
+    raw = re.split(r"(?<=[。！？?])", text)
+    sentences = [item.strip() for item in raw if item.strip()]
+    deduped: list[str] = []
+    for sentence in sentences:
+        if not deduped or deduped[-1] != sentence:
+            deduped.append(sentence)
+    merged: list[str] = []
+    for sentence in deduped:
+        if (
+            merged
+            and len(sentence.replace("。", "").replace("？", "").replace("！", "").strip()) <= 4
+            and re.search(r"[がをにではともへ]。$", merged[-1])
+        ):
+            merged[-1] = merged[-1][:-1] + sentence
+            continue
+        merged.append(sentence)
+    return merged
+
+
+def chunks_to_shadowing_lines(chunks: Iterable[Chunk]) -> list[str]:
+    lines: list[str] = []
+    pending_number: str | None = None
+
+    def append_text(text: str) -> None:
+        nonlocal pending_number
+        if pending_number is not None:
+            lines.append(f"{pending_number} {text}")
+            pending_number = None
+            return
+        if lines and re.match(r"^\d+\s", lines[-1]):
+            lines[-1] += text
+            return
+        lines.append(text)
+
+    for chunk in chunks:
+        text = normalize_shadowing_text(chunk.text)
+        if not text:
+            continue
+        if re.fullmatch(r"\d+", text):
+            pending_number = text
+            continue
+        numbered = re.match(r"^(\d+)[.。]\s*(.+)$", text)
+        if numbered:
+            pending_number = numbered.group(1)
+            append_text(numbered.group(2))
+            continue
+        if text.startswith("セクション"):
+            lines.append(text)
+            continue
+        append_text(text)
+
+    if pending_number is not None:
+        lines.append(pending_number)
+    return lines
+
+
+def is_brief_utterance(text: str) -> bool:
+    content = re.sub(r"[。！？?、，,\s]", "", text)
+    return 1 <= len(content) <= 28
+
+
+def is_question_like(text: str) -> bool:
+    return text.endswith("？") or any(cue in text for cue in QUESTION_CUES)
+
+
+def is_request_or_offer_like(text: str) -> bool:
+    return any(cue in text for cue in REQUEST_OR_OFFER_CUES)
+
+
+def is_greeting_like(text: str) -> bool:
+    return any(cue in text for cue in GREETING_CUES)
+
+
+def is_response_like(text: str) -> bool:
+    return any(cue in text for cue in RESPONSE_CUES)
+
+
+def is_conservative_dialogue_pair(left: str, right: str) -> bool:
+    if not (is_brief_utterance(left) and is_brief_utterance(right)):
+        return False
+
+    score = 0
+    if is_question_like(left) and not is_question_like(right):
+        score += 2
+    if is_request_or_offer_like(left) and is_response_like(right):
+        score += 2
+    if is_greeting_like(left) and (is_greeting_like(right) or is_response_like(right)):
+        score += 2
+    if is_response_like(right):
+        score += 1
+
+    if score >= 2:
+        return True
+
+    if left.endswith("。") and right.endswith("。") and "です" in left and "です" in right:
+        if is_greeting_like(left) or is_greeting_like(right):
+            return True
+    return False
+
+
+def render_conservative_ab_dialogue(utterances: list[str]) -> list[str] | None:
+    cleaned = [item.strip() for item in utterances if item and item.strip()]
+    if len(cleaned) not in {2, 4}:
+        return None
+    if any(not is_brief_utterance(item) for item in cleaned):
+        return None
+
+    for idx in range(0, len(cleaned), 2):
+        if not is_conservative_dialogue_pair(cleaned[idx], cleaned[idx + 1]):
+            return None
+
+    rendered: list[str] = []
+    for idx, utterance in enumerate(cleaned):
+        speaker = "A" if idx % 2 == 0 else "B"
+        rendered.append(f"{speaker}：{utterance}")
+    return rendered
+
+
+def chunks_to_structured_blocks(chunks: Iterable[Chunk]) -> list[ScriptBlock]:
+    blocks: list[ScriptBlock] = []
+    pending_number: str | None = None
+    pending_utterances: list[str] = []
+
+    def flush_numbered() -> None:
+        nonlocal pending_number, pending_utterances
+        if pending_number is not None:
+            blocks.append(ScriptBlock(kind="numbered", label=pending_number, utterances=pending_utterances.copy()))
+        elif pending_utterances:
+            blocks.append(ScriptBlock(kind="plain", utterances=pending_utterances.copy()))
+        pending_number = None
+        pending_utterances = []
+
+    for chunk in chunks:
+        text = normalize_shadowing_text(chunk.text)
+        if not text:
+            continue
+        if text.startswith("セクション"):
+            flush_numbered()
+            blocks.append(ScriptBlock(kind="section", text=text))
+            continue
+        numbered = re.match(r"^(\d+)[.。]\s*(.+)$", text)
+        if re.fullmatch(r"\d+", text):
+            flush_numbered()
+            pending_number = text
+            continue
+        if numbered:
+            flush_numbered()
+            pending_number = numbered.group(1)
+            pending_utterances = [numbered.group(2)]
+            continue
+        if pending_number is not None:
+            pending_utterances.append(text)
+        else:
+            blocks.append(ScriptBlock(kind="plain", utterances=[text]))
+
+    flush_numbered()
+    return blocks
+
+
+def render_dialogue_script_section(sentences: list[str], chunks: list[Chunk], structured_mode: bool) -> tuple[str, bool]:
+    if structured_mode:
+        rendered_blocks: list[str] = []
+        dialogue_detected = False
+        for block in chunks_to_structured_blocks(chunks):
+            if block.kind == "section":
+                rendered_blocks.append(block.text or "")
+                continue
+            if block.kind == "numbered":
+                lines = [block.label or ""]
+                rendered_dialogue = render_conservative_ab_dialogue(block.utterances or [])
+                if rendered_dialogue is not None:
+                    lines.extend(rendered_dialogue)
+                    dialogue_detected = True
+                else:
+                    lines.extend(block.utterances or [])
+                rendered_blocks.append("\n".join(line for line in lines if line))
+                continue
+            rendered_dialogue = render_conservative_ab_dialogue(block.utterances or [])
+            if rendered_dialogue is not None:
+                rendered_blocks.append("\n".join(rendered_dialogue))
+                dialogue_detected = True
+            else:
+                rendered_blocks.append("\n".join(block.utterances or []))
+
+        return "\n\n".join(block for block in rendered_blocks if block).strip(), dialogue_detected
+
+    rendered_dialogue = render_conservative_ab_dialogue(sentences)
+    if rendered_dialogue is not None:
+        return "\n".join(rendered_dialogue), True
+
+    paragraphs = group_paragraphs(sentences)
+    script_section = "\n\n".join(paragraphs) if paragraphs else "当前未能生成稳定脚本，请检查音频或模型环境。"
+    return script_section, False
+
+
+def count_question_numbers(text: str) -> int:
+    return len(set(re.findall(r"(\d+)番", text)))
+
+
+def count_option_markers(text: str) -> int:
+    return len(re.findall(r"(?<!\d)([123])(?=[^\d])", text))
+
+
+def score_short_choice_candidate(full_text: str, sentences: list[str], audio_path: Path) -> int:
+    score = 0
+    score += count_question_numbers(full_text) * 8
+    score += count_option_markers(full_text) * 3
+    score += sum(1 for sentence in sentences if re.search(r"\d+番", sentence)) * 5
+    score += sum(1 for sentence in sentences if re.search(r"(?<!\d)[123](?=[^\d])", sentence)) * 2
+    if "何と言いますか" in full_text:
+        score += 6
+    if "お邪魔しています" in full_text:
+        score += 2
+    if "行ってまいります" in full_text:
+        score += 2
+    if audio_path.stem in full_text:
+        score -= 2
+    return score
+
+
+def split_sentences_from_text(text: str) -> list[str]:
+    return [segment.strip() for segment in re.split(r"(?<=[。！？?])", text) if segment.strip()]
+
+
+def choose_short_choice_script(generated_script: str, existing_script: str | None, audio_path: Path) -> str:
+    if not existing_script:
+        return generated_script
+
+    generated_clean = clean_transcript_text(generated_script)
+    existing_clean = clean_transcript_text(existing_script)
+    generated_score = score_short_choice_candidate(
+        generated_clean,
+        split_sentences_from_text(generated_clean),
+        audio_path,
+    )
+    existing_score = score_short_choice_candidate(
+        existing_clean,
+        split_sentences_from_text(existing_clean),
+        audio_path,
+    )
+    if existing_score >= generated_score:
+        return existing_script
+    return generated_script
+
+
+def build_candidate(
+    audio_path: Path,
+    locale: str,
+    route_label: str,
+    engine: str = "apple",
+    faster_whisper_python: str | None = None,
+    faster_whisper_model: str = DEFAULT_FASTER_WHISPER_MODEL,
+    faster_whisper_compute_type: str = DEFAULT_FASTER_WHISPER_COMPUTE_TYPE,
+) -> TranscriptionCandidate:
+    if engine == "faster-whisper":
+        payload = invoke_faster_whisper(
+            audio_path,
+            locale,
+            faster_whisper_python,
+            faster_whisper_model,
+            faster_whisper_compute_type,
+        )
+        if is_shadowing_path(audio_path):
+            payload = normalize_payload_for_shadowing(payload)
+        segments = raw_segments_to_chunks(payload.get("segments", []))
+        if is_shadowing_path(audio_path):
+            sentences = chunks_to_shadowing_lines(segments)
+            full_text = "\n".join(sentences)
+        else:
+            full_text = clean_transcript_text(str(payload.get("full_text", "")))
+            sentences = chunks_to_sentences(segments)
+    else:
+        payload = invoke_helper(audio_path, locale)
+        segments = merge_chunks(payload.get("segments", []))
+        full_text = clean_transcript_text(str(payload.get("full_text", "")))
+        sentences = chunks_to_sentences(segments)
+    if not sentences and full_text:
+        sentences = [segment.strip() for segment in re.split(r"(?<=[。！？?])", full_text) if segment.strip()]
+    return TranscriptionCandidate(
+        payload=payload,
+        segments=segments,
+        sentences=sentences,
+        full_text=full_text,
+        score=score_short_choice_candidate(full_text, sentences, audio_path),
+        route_label=route_label,
+    )
+
+
+def build_slow_copy(audio_path: Path) -> Path:
+    suffix = audio_path.suffix or ".mp3"
+    handle, temp_path = tempfile.mkstemp(prefix=f"{audio_path.stem}_slow_", suffix=suffix)
+    os.close(handle)
+    slow_path = Path(temp_path)
+    run_ffmpeg(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(audio_path),
+            "-filter:a",
+            "atempo=0.85",
+            str(slow_path),
+        ]
+    )
+    return slow_path
+
+
+def transcribe_with_heuristics(
+    audio_path: Path,
+    locale: str,
+    engine: str = "auto",
+    faster_whisper_python: str | None = None,
+    faster_whisper_model: str = DEFAULT_FASTER_WHISPER_MODEL,
+    faster_whisper_compute_type: str = DEFAULT_FASTER_WHISPER_COMPUTE_TYPE,
+) -> tuple[TranscriptionCandidate, str]:
+    selected_engine = "faster-whisper" if engine == "auto" and is_shadowing_path(audio_path) else engine
+    if selected_engine == "faster-whisper":
+        try:
+            candidate = build_candidate(
+                audio_path,
+                locale,
+                "faster-whisper",
+                "faster-whisper",
+                faster_whisper_python,
+                faster_whisper_model,
+                faster_whisper_compute_type,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "faster-whisper small route failed. Install faster-whisper in a venv and set FASTER_WHISPER_PYTHON, "
+                "or rerun with --engine apple to force the Apple Speech route. "
+                f"Original error: {exc}"
+            ) from exc
+        return candidate, "faster-whisper"
+
+    base_candidate = build_candidate(audio_path, locale, "base", "apple")
+    if not is_short_choice_mode(audio_path):
+        return base_candidate, "base"
+
+    slow_path = build_slow_copy(audio_path)
+    try:
+        slow_candidate = build_candidate(slow_path, locale, "slow", "apple")
+    finally:
+        try:
+            slow_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    if slow_candidate.score > base_candidate.score:
+        return slow_candidate, "slow"
+    return base_candidate, "base"
+
+
+def infer_title(audio_stem: str, forced_title: str | None, sentences: list[str]) -> str:
+    prefix = "_".join(audio_stem.split("_")[:2])
+    if forced_title:
+        return f"{prefix} {forced_title}"
+    topic = infer_topic_title(sentences)
+    if topic:
+        return f"{prefix} {topic}"
+    for sentence in sentences:
+        stripped = sentence.replace("。", "").strip()
+        if stripped.startswith("第") or stripped in {"質問", "買える"}:
+            continue
+        if re.match(r"^\d+-\d+聞こう", stripped) or re.match(r"^\d+番", stripped):
+            continue
+        if 3 <= len(stripped) <= 14 and re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", stripped):
+            return f"{prefix} {stripped}"
+    return f"{prefix} 识别稿"
+
+
+def infer_title_from_existing_note(audio_path: Path, note_path: Path | None) -> str | None:
+    if note_path is None or not note_path.exists() or should_rename_generated_note(note_path):
+        return None
+    prefix = f"{audio_path.stem}_"
+    if not note_path.stem.startswith(prefix):
+        return None
+    suffix = note_path.stem.removeprefix(prefix).replace("_", " ").strip()
+    if not suffix:
+        return None
+    return f"{audio_path.stem} {suffix}"
+
+
+def infer_topic_title(sentences: list[str]) -> str | None:
+    text = "".join(sentences)
+    phrase_pairs = [
+        (("土用の丑の日", "節分"), "土用の丑の日と節分の質問"),
+        (("摂取カロリー",), "1日の摂取カロリー"),
+        (("恵方巻き", "うなぎ", "お菓子"), "恵方巻きとうなぎとお菓子"),
+        (("土用の丑の日", "うなぎ"), "土用の丑の日とうなぎ"),
+        (("節分", "恵方巻き"), "節分と恵方巻き"),
+        (("ユニセックス", "ファッション"), "ユニセックスファッション"),
+        (("三井公園",), "私の町"),
+    ]
+    for keywords, title in phrase_pairs:
+        if all(keyword in text for keyword in keywords):
+            return title
+
+    repeated = [
+        candidate
+        for candidate in re.findall(r"[一-龥ぁ-んァ-ヶー]{4,12}", text)
+        if candidate not in {"日本では", "ということ", "という習慣", "本当だとしたら", "商業主義から", "新しい食生活"}
+    ]
+    counts: dict[str, int] = {}
+    for candidate in repeated:
+        counts[candidate] = counts.get(candidate, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))
+    if ranked and ranked[0][1] >= 2:
+        return ranked[0][0]
+    return None
+
+
+def slugify_note_title(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]', "", value).strip()
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    return cleaned or "识别稿"
+
+
+def desired_note_path(audio_path: Path, title: str) -> Path:
+    return audio_path.parent / f"{audio_path.stem}_{slugify_note_title(title.split(' ', 1)[1])}.md"
+
+
+def should_rename_generated_note(note_path: Path) -> bool:
+    suffix = note_path.stem.removeprefix(f"{note_path.stem.split('_')[0]}_{note_path.stem.split('_')[1]}_")
+    return (
+        note_path.name.endswith("_识别稿.md")
+        or bool(re.match(r"^\d+-\d+聞こう$", suffix))
+        or bool(re.match(r"^\d+番", suffix))
+    )
+
+
+def infer_source_tag(audio_path: Path) -> str | None:
+    path_text = audio_path.as_posix()
+    if "中級を学ぼう" in path_text or audio_path.stem.startswith("manabo_"):
+        return "source/manabo"
+    if "ドリル＆ドリル" in path_text or "日本語能力試験" in path_text:
+        return "source/drill_n3"
+    if "実力アップ" in path_text:
+        return "source/jitsuryoku_up"
+    return None
+
+
+def build_default_frontmatter(
+    audio_path: Path,
+    sentence_count: int,
+    short_choice_mode: bool,
+    dialogue_content_mode: bool = False,
+) -> list[str]:
+    today = date.today().isoformat()
+    difficulty = "3" if sentence_count >= 8 else "2"
+    if short_choice_mode:
+        weak_points = [
+            "这条材料是短句应答题，题干和选项切分容易粘连",
+            "若个别选项仍不自然，优先回听题干和错误选项",
+        ]
+        practice_focus = "重点抓题干与三选项结构，并对比自然说法和不自然选项。"
+    elif dialogue_content_mode:
+        weak_points = [
+            "对话轮替时容易把发言人和应答关系听反",
+            "场景词、数字、人名、地点等短信息在对话里更容易混淆",
+        ]
+        practice_focus = "先确认每轮是谁在问、谁在答，再抓场景里的高频问句和应答模板。"
+    else:
+        weak_points = [
+            "新生成的精听稿，建议先听一遍确认题号和开头提示语",
+            "长句和专有名词可能仍有少量自动转写误差",
+        ]
+        practice_focus = "先通读脚本抓主题，再对照带时间字幕精修 1-3 个长句。"
+    lines = [
+        "track: listening",
+        "status: active",
+        "priority: high",
+        "done_today: false",
+        f"audio_ref: {audio_path.name}",
+        "transcript_status: full",
+        "transcript_ref: in-note",
+        f"difficulty: {difficulty}",
+        f"segment_count: {sentence_count}",
+    ]
+    lines.extend(["weak_points:"] + [f"  - {item}" for item in weak_points])
+    lines.append(f"practice_focus: {practice_focus}")
+    lines.append("daily_use_sentences: []")
+    lines.append("source_notes: []")
+    lines.append(f"first_seen: {today}")
+    lines.append(f"last_seen: {today}")
+    lines.append("seen_count: 1")
+    lines.append("error_count: 0")
+    lines.append("review_stage: day0")
+    lines.append(f"next_review: {today}")
+    lines.append('last_reviewed: ""')
+    lines.extend(["tags:", "  - jp/listening", "  - jp/p0_plus"])
+    source_tag = infer_source_tag(audio_path)
+    if source_tag:
+        lines.append(f"  - {source_tag}")
+    return lines
+
+
+def group_paragraphs(sentences: list[str], limit: int = 70) -> list[str]:
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    count = 0
+    for sentence in sentences:
+        if current and count + len(sentence) > limit:
+            paragraphs.append(current)
+            current = []
+            count = 0
+        current.append(sentence)
+        count += len(sentence)
+    if current:
+        paragraphs.append(current)
+    return ["".join(items) for items in paragraphs]
+
+
+def format_timestamp(value: float | None) -> str:
+    if value is None:
+        return "??:??.??"
+    minutes = int(value // 60)
+    seconds = value - (minutes * 60)
+    return f"{minutes:02d}:{seconds:05.2f}"
+
+
+def parse_sections(body: str) -> list[tuple[str, str]]:
+    sections: list[tuple[str, str]] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("## "):
+            if current_heading is not None:
+                sections.append((current_heading, "\n".join(current_lines).strip()))
+            current_heading = line[3:].strip()
+            current_lines = []
+            continue
+        if current_heading is not None:
+            current_lines.append(line)
+    if current_heading is not None:
+        sections.append((current_heading, "\n".join(current_lines).strip()))
+    return sections
+
+
+def choose_material_section(preserved_sections: dict[str, str], material_note: str) -> str:
+    existing = preserved_sections.get("素材说明")
+    if not existing:
+        return material_note
+    if "faster-whisper" in material_note and "faster-whisper" not in existing:
+        return f"{material_note}\n\n既存说明：{existing}"
+    return existing
+
+
+def decorate_material_note(material_note: str, dialogue_content_mode: bool) -> str:
+    if not dialogue_content_mode:
+        return material_note
+    if DIALOGUE_MATERIAL_NOTE_SUFFIX in material_note:
+        return material_note
+    return f"{material_note}\n\n{DIALOGUE_MATERIAL_NOTE_SUFFIX}"
+
+
+def build_body(
+    title: str,
+    audio_name: str,
+    sentences: list[str],
+    chunks: list[Chunk],
+    audio_path: Path,
+    existing_body: str | None = None,
+    material_note: str = DEFAULT_MATERIAL_NOTE,
+    short_choice_mode: bool = False,
+    structured_dialogue_mode: bool = False,
+) -> tuple[str, bool]:
+    script_section, dialogue_content_mode = render_dialogue_script_section(sentences, chunks, structured_dialogue_mode)
+    existing_sections = parse_sections(existing_body or "")
+    known_headings = {"脚本", "可直接背的常用句", "素材说明"}
+    preserved_sections = {heading: content for heading, content in existing_sections}
+    if short_choice_mode:
+        script_section = choose_short_choice_script(
+            script_section,
+            preserved_sections.get("脚本"),
+            audio_path,
+        )
+    common_section = (
+        preserved_sections["可直接背的常用句"]
+        if "可直接背的常用句" in preserved_sections
+        else COMMON_SECTION_PLACEHOLDER
+    )
+    material_section = (
+        choose_material_section(preserved_sections, decorate_material_note(material_note, dialogue_content_mode))
+    )
+
+    lines = [
+        f"# {title}",
+        "",
+        f"![[{audio_name}]]",
+        "",
+        "## 脚本",
+        "",
+        script_section,
+        "",
+        "## 可直接背的常用句",
+        "",
+        common_section,
+        "",
+        "## 素材说明",
+        "",
+        material_section,
+    ]
+
+    for heading, content in existing_sections:
+        if heading in known_headings:
+            continue
+        lines.extend(["", f"## {heading}", ""])
+        if content:
+            lines.append(content)
+
+    return "\n".join(lines), dialogue_content_mode
+
+
+def render_note(frontmatter_lines: list[str], body: str) -> str:
+    return "---\n" + "\n".join(frontmatter_lines) + "\n---\n\n" + body + "\n"
+
+
+def process_one(
+    audio_path: Path,
+    note_override: str | None,
+    locale: str,
+    forced_title: str | None,
+    dry_run: bool,
+    engine: str = "auto",
+    faster_whisper_python: str | None = None,
+    faster_whisper_model: str = DEFAULT_FASTER_WHISPER_MODEL,
+    faster_whisper_compute_type: str = DEFAULT_FASTER_WHISPER_COMPUTE_TYPE,
+) -> str:
+    candidate, route_label = transcribe_with_heuristics(
+        audio_path,
+        locale,
+        engine,
+        faster_whisper_python,
+        faster_whisper_model,
+        faster_whisper_compute_type,
+    )
+    sentences = candidate.sentences
+    short_choice_mode = is_short_choice_mode(audio_path)
+    structured_dialogue_mode = is_shadowing_path(audio_path)
+    note_path = resolve_note_path(audio_path, note_override)
+    if forced_title:
+        title = infer_title(audio_path.stem, forced_title, sentences)
+    else:
+        title = infer_title_from_existing_note(audio_path, note_path) or infer_title(audio_path.stem, None, sentences)
+    target_note_path = desired_note_path(audio_path, title)
+    existed = note_path.exists() if note_path is not None else False
+    should_rename_note = (
+        note_path is not None
+        and note_override is None
+        and note_path.exists()
+        and should_rename_generated_note(note_path)
+        and note_path != target_note_path
+        and not target_note_path.exists()
+    )
+    read_note_path = note_path
+    if note_path is None:
+        write_note_path = target_note_path
+    elif should_rename_note and not dry_run:
+        note_path.rename(target_note_path)
+        read_note_path = target_note_path
+        write_note_path = target_note_path
+    elif should_rename_note:
+        write_note_path = target_note_path
+    else:
+        write_note_path = note_path
+    if route_label == "faster-whisper":
+        material_note = FASTER_WHISPER_MATERIAL_NOTE
+    else:
+        material_note = SHORT_CHOICE_MATERIAL_NOTE if short_choice_mode else DEFAULT_MATERIAL_NOTE
+    if short_choice_mode and route_label == "slow":
+        material_note += " 本次已自动采用慢速副本作为较优转写结果。"
+
+    existing_body: str | None
+    if read_note_path is not None and read_note_path.exists():
+        frontmatter_lines, old_body = parse_frontmatter(read_note_path.read_text(encoding="utf-8"))
+        set_scalar(frontmatter_lines, "transcript_status", "full")
+        set_scalar(frontmatter_lines, "transcript_ref", "in-note")
+        set_scalar(frontmatter_lines, "last_seen", date.today().isoformat())
+        if not has_key(frontmatter_lines, "daily_use_sentences"):
+            set_list(frontmatter_lines, "daily_use_sentences", [])
+        existing_body = old_body
+    else:
+        write_note_path.parent.mkdir(parents=True, exist_ok=True)
+        frontmatter_lines = []
+        existing_body = None
+    body, dialogue_content_mode = build_body(
+        title,
+        audio_path.name,
+        sentences,
+        candidate.segments,
+        audio_path,
+        existing_body,
+        material_note,
+        short_choice_mode,
+        structured_dialogue_mode,
+    )
+    if not frontmatter_lines:
+        frontmatter_lines = build_default_frontmatter(audio_path, len(sentences), short_choice_mode, dialogue_content_mode)
+    rendered = render_note(frontmatter_lines, body)
+    if dry_run:
+        return f"=== {write_note_path} ===\n{rendered}"
+    write_note_path.write_text(rendered, encoding="utf-8")
+    verb = "Updated" if existed else "Created"
+    return f"{verb} {write_note_path}"
+
+
+def scan_audio_files(directory: Path) -> list[Path]:
+    files = []
+    for path in directory.rglob("*"):
+        if path.suffix.lower() in {".mp3", ".m4a", ".wav", ".aac"}:
+            files.append(path)
+    return sorted(files)
+
+
+def main() -> int:
+    args = parse_args()
+    if not args.audio_path and not args.scan_dir:
+        print("Provide either <audio_path> or --scan-dir.", file=sys.stderr)
+        return 1
+    if args.audio_path and args.scan_dir:
+        print("Use either a single audio path or --scan-dir, not both.", file=sys.stderr)
+        return 1
+
+    if args.scan_dir:
+        print("Batch scan mode is not supported in the current Apple Speech helper route.", file=sys.stderr)
+        return 1
+
+    if args.audio_path:
+        result = process_one(
+            Path(args.audio_path),
+            args.note_path,
+            args.locale,
+            args.title,
+            args.dry_run,
+            args.engine,
+            args.faster_whisper_python,
+            args.faster_whisper_model,
+            args.faster_whisper_compute_type,
+        )
+        print(result)
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
