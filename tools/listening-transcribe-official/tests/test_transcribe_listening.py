@@ -20,6 +20,34 @@ SETUP_MODULE_PATH = Path(__file__).resolve().parents[1] / "setup_offline_diction
 
 
 class TranscribeListeningTests(unittest.TestCase):
+    def test_confirmed_accent_index_uses_configured_focus_vocab_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = root / "系统配置/paths.json"
+            focus = root / "学习系统/词库/重点词汇"
+            config.parent.mkdir(parents=True)
+            focus.mkdir(parents=True)
+            config.write_text(
+                json.dumps(
+                    {
+                        "roles": {
+                            "focus_vocab_root": "学习系统/词库/重点词汇",
+                            "base_vocab_root": "学习系统/词库/基础词汇",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (focus / "相撲.md").write_text(
+                "---\nheadword: 相撲\nreading: すもう\naccent_display: すもう⓪\n---\n",
+                encoding="utf-8",
+            )
+
+            index = MODULE.load_confirmed_accent_index(root)
+
+            self.assertEqual(index["相撲"], "すもう⓪")
+
     def test_process_one_preserves_existing_second_phase_edits(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -309,7 +337,7 @@ class TranscribeListeningTests(unittest.TestCase):
             with mock.patch.object(MODULE, "run_ffmpeg", side_effect=fake_run_ffmpeg) as ffmpeg_mock:
                 refs = MODULE.export_sentence_audio_slices(audio_path, chunks, attach_dir, "manabo_cz99")
 
-            self.assertEqual(refs, ["manabo_cz99_S01.m4a"])
+            self.assertEqual(refs, ["attach/manabo_cz99_S01.m4a"])
             self.assertTrue((attach_dir / "manabo_cz99_S01.m4a").exists())
             command = ffmpeg_mock.call_args.args[0]
             self.assertIn("-ss", command)
@@ -656,16 +684,44 @@ class TranscribeListeningTests(unittest.TestCase):
             command = run_mock.call_args_list[0].args[0]
             self.assertIn("--url", command)
             self.assertIn("https://www.youtube.com/watch?v=abc123", command)
-            final_audio = output_dir / "youtube_abc123_4b91d82f.m4a"
+            final_audio = output_dir / "attach" / "youtube_abc123_4b91d82f.m4a"
             self.assertTrue(final_audio.exists())
             created_notes = list(output_dir.glob("youtube_abc123_4b91d82f_*.md"))
             self.assertEqual(len(created_notes), 1)
             rendered = created_notes[0].read_text(encoding="utf-8")
-            self.assertIn("audio_ref: youtube_abc123_4b91d82f.m4a", rendered)
-            self.assertIn("![[youtube_abc123_4b91d82f.m4a]]", rendered)
+            self.assertIn("audio_ref: attach/youtube_abc123_4b91d82f.m4a", rendered)
+            self.assertIn("![[attach/youtube_abc123_4b91d82f.m4a]]", rendered)
             self.assertIn("電話番号の読み方です。", rendered)
             self.assertIn("来源 URL：<https://www.youtube.com/watch?v=abc123>", rendered)
             self.assertIn("Source URL: https://www.youtube.com/watch?v=abc123", result)
+            self.assertTrue((output_dir / "artifacts/youtube_abc123_4b91d82f.listenkit.md").exists())
+            self.assertTrue((output_dir / "artifacts/youtube_abc123_4b91d82f.listenkit.json").exists())
+
+    def test_audio_in_attach_generates_note_in_material_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            material_dir = root / "中級を学ぼう"
+            attach_dir = material_dir / "attach"
+            attach_dir.mkdir(parents=True)
+            audio_path = attach_dir / "manabo_cz99.mp3"
+            audio_path.write_bytes(b"")
+            payload = {
+                "full_text": "これは新しい素材です。",
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "これは新しい素材です。"},
+                ],
+            }
+
+            with mock.patch.object(MODULE, "invoke_listenkit", return_value=payload):
+                result = MODULE.process_one(audio_path, None, "ja-JP", None, False)
+
+            self.assertIn("Created", result)
+            created_notes = list(material_dir.glob("manabo_cz99_*.md"))
+            self.assertEqual(len(created_notes), 1)
+            self.assertEqual(list(attach_dir.glob("*.md")), [])
+            rendered = created_notes[0].read_text(encoding="utf-8")
+            self.assertIn("audio_ref: attach/manabo_cz99.mp3", rendered)
+            self.assertIn("![[attach/manabo_cz99.mp3]]", rendered)
 
     def test_existing_note_title_is_preserved_for_shadowing_rerun(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

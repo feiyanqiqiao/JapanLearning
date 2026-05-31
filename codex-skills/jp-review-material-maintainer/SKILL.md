@@ -66,7 +66,7 @@ Rules:
 
 ## Standard Obsidian CLI Patterns
 
-Use these patterns as the default starting point. Resolve role roots from `学习系统/系统配置/paths.json` before substituting `path=...`; do not treat the example paths below as hard-coded system truth.
+Use these patterns as the default starting point. Resolve role roots from `系统配置/paths.json` before substituting `path=...`; do not treat the example paths below as hard-coded system truth.
 
 ### 1. Search focus review cards first
 
@@ -129,20 +129,20 @@ Prefer `path=` when the note name could exist in both layers.
 
 ## Scope
 
-This vault uses a dual-layer vocabulary system. Resolve concrete roots from `学习系统/系统配置/paths.json` and role-specific local guidance:
+This vault uses a dual-layer vocabulary system. Resolve concrete roots from `系统配置/paths.json` and role-specific local guidance:
 
 - Focus review cards: `<focus_vocab_root>`
 - Base lexicon: `<base_vocab_root>`
 
-Only vocabulary uses the dual-layer model. Grammar and error cards stay in `学习系统/课堂复习/语法` and `学习系统/课堂复习/错题`.
+Only vocabulary uses the dual-layer model. Grammar and error cards stay in `学习系统/语法` and `学习系统/错题`.
 
 When the source note contains explicit sections such as `## 単語`, `## 文法`, and `## 間違えた問題`, split them by role instead of forcing everything into vocabulary:
 
 - `単語` → vocab extraction rules in this skill
   - `### 通常語彙` → normal vocab extraction
   - `### 漢字差分` → normal vocab extraction plus kanji-difference metadata
-- `文法` → grammar cards under `学习系统/课堂复习/语法`
-- `間違えた問題` → update related grammar cards when relevant, then create or update error cards under `学习系统/课堂复习/错题`
+- `文法` → grammar cards under `学习系统/语法`
+- `間違えた問題` → update related grammar cards when relevant, then create or update error cards under `学习系统/错题`
 
 For entries under `### 漢字差分`, keep the normal vocabulary-card flow and add:
 
@@ -302,7 +302,7 @@ python3 codex-skills/jp-review-material-maintainer/scripts/apply-accent-confirma
 
 ### Grammar Card
 
-Path: `学习系统/课堂复习/语法/<pattern>.md`
+Path: `学习系统/语法/<pattern>.md`
 
 Required properties:
 
@@ -355,7 +355,7 @@ Naming rules:
 
 ### Error Card
 
-Path: `学习系统/课堂复习/错题/YYYY-MM-DD_<label>.md`
+Path: `学习系统/错题/YYYY-MM-DD_<label>.md`
 
 Required properties:
 

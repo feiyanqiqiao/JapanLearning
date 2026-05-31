@@ -28,14 +28,21 @@ DATE="${1:-$(date +%F)}"
 python3 - "${ROOT}" <<'PY'
 from __future__ import annotations
 
+import json
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 root = Path(sys.argv[1])
-card_root = root / "学习系统/生活口语/句库"
-guide_root = root / "学习系统/生活口语/场景指南"
+config_path = root / "系统配置/paths.json"
+if not config_path.exists():
+    config_path = root / "学习系统/系统/配置/paths.json"  # legacy fallback
+if not config_path.exists():
+    config_path = root / "学习系统/系统配置/paths.json"  # legacy fallback
+roles = json.loads(config_path.read_text()).get("roles", {})
+card_root = root / roles.get("speaking_card_root", "学习系统/生活口语/句库")
+guide_root = root / roles.get("speaking_guide_root", "学习系统/生活口语/场景指南")
 required_fields = (
     "track",
     "status",

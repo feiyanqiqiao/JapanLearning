@@ -34,7 +34,7 @@ Do not automatically promote freshly generated Shadowing selections merely becau
 
 ## Card Workflow
 
-1. Read `学习系统/模板/录入模板索引.md` and use its current `## 生活口语句子卡模板` as the format source of truth.
+1. Read `系统配置/模板/录入模板索引.md` and use its current `## 生活口语句子卡模板` as the format source of truth.
 2. Recursively search `学习系统/生活口语/句库` before writing. Check exact `jp_text`, the same core exchange, and nearby cards that should be merged instead of duplicated.
 3. Promote only high-fit material:
    - keep natural phrases with a clear real-life scene, speaker role, practical meaning, and likely reply

@@ -28,7 +28,7 @@ zsh codex-skills/jp-listening-script-generator/scripts/sync-to-global.sh
 
 Prefer single-item processing first. The main path is:
 
-1. identify one local audio file under `学习系统/听力`, or one URL plus a target output directory under `学习系统/听力`
+1. identify one local audio file under a listening material directory's `attach/`, or one URL plus a target material directory under `学习系统/听力`
 2. locate the matching note, or create a new note when none exists yet
 3. run the transcription pipeline
 4. render the Markdown draft note
@@ -67,13 +67,14 @@ The generator delegates transcript acquisition to ListenKit's Markdown workflow 
 - `--engine auto` is the default and lets ListenKit choose its default engine
 - `--engine apple` explicitly requests ListenKit's Apple Speech route
 - `--engine faster-whisper` explicitly requests ListenKit's faster-whisper route
-- URL input writes the finalized audio into the chosen output directory and generates the listening note next to that audio
+- URL input treats `--output-dir` as the material directory: finalized audio goes into its `attach/`, raw ListenKit `.listenkit.md/.json` artifacts go into `artifacts/`, and the learning note stays at the material-directory root
+- local audio under `attach/` also generates or updates the learning note at the parent material-directory root; legacy root-level local audio input remains readable during migration
 
 The vault wrapper passes ListenKit's `--auto-init` flag for the default/faster-whisper route. On first use, ListenKit may create `../ListenKit/.venv` and install faster-whisper; do not create `.venv` manually from the vault parent directory.
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/04.mp3" --engine faster-whisper --locale ja-JP --dry-run
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/manabo_cz22.mp3" --listening-mode intensive --dry-run
+zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/attach/04.mp3" --engine faster-whisper --locale ja-JP --dry-run
+zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz22.mp3" --listening-mode intensive --dry-run
 ```
 
 Set `FASTER_WHISPER_PYTHON=/path/to/python` only when intentionally overriding ListenKit's repo-local environment.
@@ -90,7 +91,7 @@ The current local test setup uses:
 The skill does not implement generic ASR itself. Always call the local Markdown generator through the wrapper; that generator consumes ListenKit's generated transcript artifacts:
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/manabo_cz16.mp3"
+zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz16.mp3"
 ```
 
 ## Offline Dictionary Setup
@@ -127,9 +128,9 @@ zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.
 Useful variants:
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/manabo_cz16.mp3"
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/N2/202212/example.mp3" --locale ja-JP
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/04.mp3" --engine auto --locale ja-JP
+zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz16.mp3"
+zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/N2/202212/attach/example.mp3" --locale ja-JP
+zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/attach/04.mp3" --engine auto --locale ja-JP
 zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh --url "https://example.com/video" --output-dir "学习系统/听力/自学素材" --title "素材标题"
 ```
 
@@ -155,7 +156,7 @@ The generated note has two modes. Default is `extensive`; use `--listening-mode 
 - set `transcript_status: full`
 - set `transcript_ref: in-note`
 - set `listening_mode: extensive` or `listening_mode: intensive`
-- keep the audio embed
+- keep the source-audio embed as `![[attach/audio_name.ext]]`
 - render `## 脚本`
 - render `## 可直接背的常用句`
 - render `## 素材说明`
@@ -164,7 +165,7 @@ The generated note has two modes. Default is `extensive`; use `--listening-mode 
 - in `extensive`, do not render `## 精听学习包`, do not generate sentence slices, and inline known accent marks directly in `## 脚本`
 - in `intensive`, render `## 精听学习包`; each block is `### SNN`, blank line, the accent-marked sentence, blank line, then the sentence audio embed
 - in `intensive`, keep `## 脚本` as the plain script without forced accent marks
-- in `intensive`, embed the sentence audio clip as `![[audio_stem_SNN.m4a]]`; when there is no reliable timestamp, write only `（语音切片待生成）`
+- in `intensive`, embed the sentence audio clip as `![[attach/audio_stem_SNN.m4a]]`; when there is no reliable timestamp, write only `（语音切片待生成）`
 - do not show `已确认`, `本地候选`, or `待确认` source labels inside the note body; use those labels only for internal selection and separate accent-review work
 - for accent data, prefer the vault's existing confirmed `accent_display`; otherwise use offline dictionary candidates and label them `本地候选`; unknown items must be `待确认`
 - export sentence clips only when reliable start/end timestamps are available; do not fabricate clips from uncertain alignment

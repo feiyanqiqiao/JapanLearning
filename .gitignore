@@ -19,6 +19,10 @@
 !tools/
 !tools/listening-transcribe-official/
 !tools/listening-transcribe-official/**
+!tools/vault-structure/
+!tools/vault-structure/**
+tools/vault-structure/**/__pycache__/
+tools/vault-structure/**/*.pyc
 
 # Always keep local/editor/cache/media/private material out of Git.
 .DS_Store

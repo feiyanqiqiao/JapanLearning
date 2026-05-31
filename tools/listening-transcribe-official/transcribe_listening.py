@@ -420,10 +420,15 @@ def invoke_listenkit(
             imported_audio = output_path.parent / "audio" / f"{output_path.stem}.{audio_format}"
             if not imported_audio.exists():
                 raise RuntimeError(f"ListenKit did not create expected audio file: {imported_audio}")
-            output_dir.mkdir(parents=True, exist_ok=True)
-            final_audio = output_dir / imported_audio.name
+            attach_dir = output_dir / "attach"
+            artifact_dir = output_dir / "artifacts"
+            attach_dir.mkdir(parents=True, exist_ok=True)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            final_audio = attach_dir / imported_audio.name
             if imported_audio.resolve() != final_audio.resolve():
                 shutil.move(str(imported_audio), final_audio)
+            shutil.move(str(output_path), artifact_dir / f"{output_path.stem}.listenkit.md")
+            shutil.move(str(transcript_json), artifact_dir / f"{output_path.stem}.listenkit.json")
             payload["_listenkit_final_audio_path"] = str(final_audio)
         return payload
 
@@ -441,11 +446,23 @@ def run_ffmpeg(args: list[str]) -> None:
         raise RuntimeError(stderr)
 
 
+def material_dir_for_audio(audio_path: Path) -> Path:
+    if audio_path.parent.name == "attach":
+        return audio_path.parent.parent
+    return audio_path.parent
+
+
+def audio_ref_for_note(audio_path: Path) -> str:
+    if audio_path.parent.name == "attach":
+        return f"attach/{audio_path.name}"
+    return audio_path.name
+
+
 def resolve_note_path(audio_path: Path, note_override: str | None) -> Path | None:
     if note_override:
         return Path(note_override)
 
-    candidates = sorted(audio_path.parent.glob(f"{audio_path.stem}_*.md"))
+    candidates = sorted(material_dir_for_audio(audio_path).glob(f"{audio_path.stem}_*.md"))
     for candidate in candidates:
         if "_无文本待补.md" in candidate.name:
             return candidate
@@ -1054,7 +1071,7 @@ def slugify_note_title(value: str) -> str:
 
 
 def desired_note_path(audio_path: Path, title: str) -> Path:
-    return audio_path.parent / f"{audio_path.stem}_{slugify_note_title(title.split(' ', 1)[1])}.md"
+    return material_dir_for_audio(audio_path) / f"{audio_path.stem}_{slugify_note_title(title.split(' ', 1)[1])}.md"
 
 
 def should_rename_generated_note(note_path: Path) -> bool:
@@ -1109,7 +1126,7 @@ def build_default_frontmatter(
         "status: active",
         "priority: high",
         "done_today: false",
-        f"audio_ref: {audio_path.name}",
+        f"audio_ref: {audio_ref_for_note(audio_path)}",
         "transcript_status: full",
         "transcript_ref: in-note",
         f"listening_mode: {listening_mode}",
@@ -1373,9 +1390,7 @@ def reliable_sentence_chunks(sentences: list[str], chunks: list[Chunk]) -> list[
 
 
 def slice_attach_dir(audio_path: Path) -> Path:
-    if audio_path.parent.name == "attach":
-        return audio_path.parent
-    return audio_path.parent / "attach"
+    return material_dir_for_audio(audio_path) / "attach"
 
 
 def export_sentence_audio_slices(
@@ -1417,7 +1432,7 @@ def export_sentence_audio_slices(
             output_path.unlink(missing_ok=True)
             refs.append(None)
             continue
-        refs.append(filename)
+        refs.append(f"attach/{filename}")
     return refs
 
 
@@ -1475,10 +1490,27 @@ def resolve_listening_mode(forced_mode: str | None, frontmatter_lines: list[str]
     return "extensive"
 
 
+def load_vault_path_roles(vault_root: Path) -> dict[str, str]:
+    for relative in (
+        "系统配置/paths.json",
+        "学习系统/系统/配置/paths.json",  # legacy fallback
+        "学习系统/系统配置/paths.json",  # legacy fallback
+    ):
+        path = vault_root / relative
+        if not path.is_file():
+            continue
+        try:
+            return json.loads(path.read_text(encoding="utf-8")).get("roles", {})
+        except (OSError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
 def load_confirmed_accent_index(vault_root: Path) -> dict[str, str]:
+    roles = load_vault_path_roles(vault_root)
     roots = [
-        vault_root / "学习系统" / "课堂复习" / "词汇",
-        vault_root / "学习系统" / "词库" / "基础词汇",
+        vault_root / roles.get("focus_vocab_root", "学习系统/词库/重点词汇"),
+        vault_root / roles.get("base_vocab_root", "学习系统/词库/基础词汇"),
         vault_root / "学习系统" / "发音",
     ]
     index: dict[str, str] = {}
@@ -1696,7 +1728,7 @@ def process_one(
         )
     body, dialogue_content_mode = build_body(
         title,
-        audio_path.name,
+        audio_ref_for_note(audio_path),
         sentences,
         candidate.segments,
         audio_path,

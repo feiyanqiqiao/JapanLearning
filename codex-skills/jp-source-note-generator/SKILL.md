@@ -31,7 +31,7 @@ zsh codex-skills/jp-source-note-generator/scripts/sync-to-global.sh
 This skill fixes the workflow and provenance requirements, not the note structure.
 
 - do not create a new universal note directory
-- do not update `学习系统/系统配置/paths.json`
+- do not update `系统配置/paths.json`
 - do not impose a fixed Markdown section layout
 - before writing the final note, read enough material to propose the likely note direction and confirm the user's choices
 - default to one learning note; create multiple notes only when the user chooses that split
