@@ -1,13 +1,13 @@
 ---
 name: jp-review-material-maintainer
-description: Use when creating or updating Japanese review materials in this Obsidian vault, such as vocabulary, grammar, pronunciation, error cards, or daily study checklist entries. Do not use for listening transcription, flexible source notes from media or transcripts, or end-of-day review rollover.
+description: Use when creating or updating Japanese review materials in this Obsidian vault, such as vocabulary, grammar, pronunciation, error cards, or daily study checklist entries. Do not use for survival-speaking cards, listening transcription, flexible source notes, or end-of-day review rollover.
 ---
 
 # JP Review Material Maintainer
 
 Use this skill when the task is to extract, create, update, merge, or promote review material in this vault, including vocabulary notes, grammar cards, pronunciation cards, error cards, and daily study checklist entries.
 
-Do not use this skill for listening transcription, flexible study source notes from media or transcripts, or end-of-day review rollover. Use `jp-listening-script-generator`, `jp-source-note-generator`, or `jp-next-day-review-updater` for those tasks.
+Do not use this skill for survival-speaking cards, listening transcription, flexible study source notes from media or transcripts, or end-of-day review rollover. Use `jp-survival-speaking-card-generator`, `jp-listening-script-generator`, `jp-source-note-generator`, or `jp-next-day-review-updater` for those tasks.
 
 ## Maintenance Source Of Truth
 

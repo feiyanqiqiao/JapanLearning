@@ -8,6 +8,7 @@ Use the local skill documents as the source of truth for task-specific behavior:
 
 - Review material maintenance: `codex-skills/jp-review-material-maintainer/SKILL.md`
 - Listening transcription notes: `codex-skills/jp-listening-script-generator/SKILL.md`
+- Survival-speaking cards: `codex-skills/jp-survival-speaking-card-generator/SKILL.md`
 - General study notes from ListenKit/raw scripts: `codex-skills/jp-source-note-generator/SKILL.md`
 - YouTube/audio export: use sibling `../ListenKit/cli/import-audio.sh`
 - End-of-day review rollover: `codex-skills/jp-next-day-review-updater/SKILL.md`

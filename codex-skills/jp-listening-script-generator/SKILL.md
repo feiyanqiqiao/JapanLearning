@@ -208,19 +208,7 @@ After the draft note exists, the skill should treat common-sentence curation as 
 
 For `Shadowing_*` notes, `## 可直接背的常用句` is only a candidate pool for survival-speaking cards. Do not automatically convert freshly generated or unreviewed common-sentence selections into `学习系统/生活口语/句库`.
 
-Convert Shadowing common sentences to survival-speaking notes only when one of these is true:
-
-- the user explicitly asks to convert the current manually reviewed common sentences
-- the note already has a clearly hand-edited `## 可直接背的常用句` section and the task is about promoting those sentences
-
-When converting, keep the rule conservative:
-
-- prefer real-life sentences that the learner can directly say or must quickly understand
-- require a clear scene, speaker role, practical meaning, and natural reply
-- reject textbook drill, overly generic grammar frames, one-off nouns, and any sentence with unresolved transcription or naturalness doubts
-- create one focused `track: survival_speaking` note per core sentence or fixed exchange under `学习系统/生活口语/句库`
-- use the current survival-speaking template in `学习系统/模板/录入模板索引.md`; do not add the old repeated `fallback_phrase` frontmatter field
-- add `source_notes` back to the Shadowing note and keep the existing listening note unchanged unless the user asked to edit it
+Only promote Shadowing common sentences when the user explicitly asks for speaking-card conversion. Hand that task off to `jp-survival-speaking-card-generator`, which owns conservative selection, deduplication, scene placement, backlinks, and optional source-slice embeds.
 
 ## Batch Mode
 
