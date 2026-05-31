@@ -17,6 +17,7 @@
 
 # Public listening tooling.
 !tools/
+!tools/README.md
 !tools/listening-transcribe-official/
 !tools/listening-transcribe-official/**
 !tools/vault-structure/
