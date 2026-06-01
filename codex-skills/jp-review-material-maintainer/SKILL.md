@@ -157,6 +157,18 @@ For entries without a kanji-difference need, keep:
 - `kanji_diff: false`
 - `kanji_diff_pairs: []`
 
+## Image-Backed Vocabulary Sources
+
+When a source note embeds an image inside `## 単語` or one of its subsections, treat the image as a vocabulary source:
+
+1. open the local attachment and inspect the printed vocabulary
+2. collect only clearly readable vocabulary items and normalize obvious dictionary forms before searching
+3. exclude items already written as text in the same source note
+4. run the normal focus-first duplicate search for each remaining item
+5. keep the original image embed unchanged
+
+Do not guess from blurred text, handwritten annotations, or uncertain OCR. Report unclear items for user confirmation instead of creating cards.
+
 ## Canonical Search Order
 
 For every candidate word, search in this order:
@@ -518,7 +530,7 @@ Delay rule:
 When splitting a classroom note:
 
 1. use `obsidian-cli` to search and read only the target note and the small set of matching candidate vocab notes
-2. collect explicit vocabulary items first
+2. collect explicit text vocabulary items first, then inspect images embedded inside `## 単語` and collect clearly readable image-backed items
 3. normalize obvious variants before searching
 4. for each word, follow the canonical search order
 5. default classroom vocabulary to focus review first, then only touch the base lexicon when restoring prior history or sinking a mastered word
