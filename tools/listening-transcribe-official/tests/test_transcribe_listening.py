@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,9 +18,48 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 SETUP_MODULE_PATH = Path(__file__).resolve().parents[1] / "setup_offline_dictionary.py"
+WRAPPER_PATH = Path(__file__).resolve().parents[3] / "codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh"
 
 
 class TranscribeListeningTests(unittest.TestCase):
+    def test_wrapper_uses_jp_listening_python_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            vault_root = Path(__file__).resolve().parents[3]
+            listening_dir = vault_root / "学习系统/听力"
+            created_listening_dir = not listening_dir.exists()
+            listening_dir.mkdir(parents=True, exist_ok=True)
+            fake_python = root / "python"
+            argv_log = root / "argv.log"
+            fake_python.write_text(
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$ARGV_LOG\"\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            env = os.environ.copy()
+            env["JP_LISTENING_PYTHON"] = str(fake_python)
+            env["ARGV_LOG"] = str(argv_log)
+
+            try:
+                result = subprocess.run(
+                    ["zsh", str(WRAPPER_PATH), "--help"],
+                    cwd=vault_root,
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                )
+            finally:
+                if created_listening_dir:
+                    listening_dir.rmdir()
+                    listening_dir.parent.rmdir()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            argv = argv_log.read_text(encoding="utf-8")
+            self.assertIn("tools/listening-transcribe-official/transcribe_listening.py", argv)
+            self.assertIn("--help", argv)
+
     def test_confirmed_accent_index_uses_configured_focus_vocab_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -345,6 +385,194 @@ class TranscribeListeningTests(unittest.TestCase):
             self.assertIn("-to", command)
             self.assertIn("2.8", command)
 
+    def test_sentence_learning_blocks_map_natural_sentences_across_chunks(self) -> None:
+        blocks = MODULE.sentence_learning_blocks(
+            ["今日は晴れです。", "散歩します。"],
+            [
+                MODULE.Chunk(start=0.0, end=1.0, text="今日は"),
+                MODULE.Chunk(start=1.0, end=3.0, text="晴れです。散歩します。"),
+            ],
+        )
+
+        self.assertIsNotNone(blocks)
+        assert blocks is not None
+        self.assertEqual([block.id for block in blocks], ["S01", "S02"])
+        self.assertEqual([block.text for block in blocks], ["今日は晴れです。", "散歩します。"])
+        self.assertEqual(blocks[0].start, 0.0)
+        self.assertGreater(blocks[0].end, 1.0)
+        self.assertEqual(blocks[0].end, blocks[1].start)
+        self.assertEqual(blocks[1].end, 3.0)
+
+    def test_shadowing_learning_blocks_group_dialogue_without_number_announcements(self) -> None:
+        blocks = MODULE.shadowing_learning_blocks(
+            [
+                MODULE.Chunk(start=0.0, end=1.0, text="セクション10"),
+                MODULE.Chunk(start=1.0, end=2.0, text="1"),
+                MODULE.Chunk(start=2.0, end=4.0, text="最近、冷えますね。"),
+                MODULE.Chunk(start=4.0, end=6.0, text="本当に寒くなりましたね。"),
+                MODULE.Chunk(start=6.0, end=7.0, text="２"),
+                MODULE.Chunk(start=7.0, end=9.0, text="新しい仕事には、もう慣れた？"),
+            ]
+        )
+
+        self.assertIsNotNone(blocks)
+        assert blocks is not None
+        self.assertEqual([block.id for block in blocks], ["S01", "S02"])
+        self.assertEqual(blocks[0].start, 2.0)
+        self.assertEqual(blocks[0].end, 6.0)
+        self.assertEqual(blocks[0].text, "最近、冷えますね。\n本当に寒くなりましたね。")
+        self.assertEqual(blocks[0].kind, "numbered-dialogue")
+        self.assertEqual(blocks[1].start, 7.0)
+
+    def test_shadowing_learning_blocks_reject_missing_group_number(self) -> None:
+        blocks = MODULE.shadowing_learning_blocks(
+            [
+                MODULE.Chunk(start=0.0, end=1.0, text="セクション10"),
+                MODULE.Chunk(start=1.0, end=2.0, text="1"),
+                MODULE.Chunk(start=2.0, end=4.0, text="最近、冷えますね。"),
+                MODULE.Chunk(start=4.0, end=5.0, text="3"),
+                MODULE.Chunk(start=5.0, end=7.0, text="今週末の予定、何かある？"),
+            ]
+        )
+
+        self.assertIsNone(blocks)
+
+    def test_manual_slice_manifest_can_override_ranges_and_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = Path(tmpdir) / "manual.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "slices": [
+                            {
+                                "id": "S01",
+                                "start": 1.5,
+                                "end": 4.5,
+                                "text": "人工整理した一段落です。",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            blocks = MODULE.load_manual_learning_blocks(manifest_path, [])
+
+        self.assertEqual(
+            blocks,
+            [
+                MODULE.LearningBlock(
+                    id="S01",
+                    text="人工整理した一段落です。",
+                    start=1.5,
+                    end=4.5,
+                    kind="manual",
+                )
+            ],
+        )
+
+    def test_export_learning_block_slices_invokes_listenkit_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audio_path = root / "attach" / "20.mp3"
+            audio_path.parent.mkdir()
+            audio_path.write_bytes(b"audio")
+            manifest_path = root / "artifacts" / "20.slices.json"
+            blocks = [
+                MODULE.LearningBlock(id="S01", text="最近、冷えますね。", start=2.0, end=4.0, kind="manual")
+            ]
+            report = {
+                "version": 1,
+                "source": str(audio_path),
+                "slices": [
+                    {
+                        "id": "S01",
+                        "start": 1.85,
+                        "end": 4.15,
+                        "path": str(audio_path.parent / "20_S01.m4a"),
+                        "status": "exported",
+                    }
+                ],
+            }
+
+            with mock.patch.object(MODULE, "listenkit_export_audio_slices_script_path", return_value=Path("/tmp/export.py")):
+                with mock.patch.object(
+                    MODULE.subprocess,
+                    "run",
+                    return_value=mock.Mock(returncode=0, stdout=json.dumps(report), stderr=""),
+                ) as run_mock:
+                    refs = MODULE.export_learning_block_slices(audio_path, blocks, manifest_path)
+
+        self.assertEqual(refs, ["attach/20_S01.m4a"])
+        command = run_mock.call_args.args[0]
+        self.assertIn("/tmp/export.py", command)
+        self.assertIn("--manifest", command)
+        self.assertIn(str(manifest_path), command)
+        self.assertIn("--overwrite", command)
+
+    def test_validate_intensive_slice_output_requires_real_nonempty_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audio_path = root / "attach" / "20.mp3"
+            audio_path.parent.mkdir()
+            audio_path.write_bytes(b"audio")
+            body = "\n".join(["## 精听学习包", "", "### S01", "", "最近、冷えますね。", "", "![[attach/20_S01.m4a]]"])
+            blocks = [
+                MODULE.LearningBlock(id="S01", text="最近、冷えますね。", start=2.0, end=4.0, kind="manual")
+            ]
+
+            with self.assertRaisesRegex(RuntimeError, "missing or empty file"):
+                MODULE.validate_intensive_slice_output(audio_path, blocks, ["attach/20_S01.m4a"], body)
+
+            (audio_path.parent / "20_S01.m4a").write_bytes(b"slice")
+            MODULE.validate_intensive_slice_output(audio_path, blocks, ["attach/20_S01.m4a"], body)
+
+    def test_validate_intensive_slice_output_rejects_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audio_path = root / "attach" / "20.mp3"
+            audio_path.parent.mkdir()
+            audio_path.write_bytes(b"audio")
+            blocks = [
+                MODULE.LearningBlock(id="S01", text="最近、冷えますね。", start=2.0, end=4.0, kind="manual")
+            ]
+
+            with self.assertRaisesRegex(RuntimeError, "still contains audio-slice placeholders"):
+                MODULE.validate_intensive_slice_output(
+                    audio_path,
+                    blocks,
+                    ["attach/20_S01.m4a"],
+                    "## 精听学习包\n\n### S01\n\n最近、冷えますね。\n\n（语音切片待生成）",
+                )
+
+    def test_build_body_intensive_uses_learning_block_text(self) -> None:
+        blocks = [
+            MODULE.LearningBlock(
+                id="S01",
+                text="A：最近、冷えますね。\nB：本当に寒くなりましたね。",
+                start=2.0,
+                end=6.0,
+                kind="numbered-dialogue",
+            )
+        ]
+        body, _ = MODULE.build_body(
+            "20 はじめまして",
+            "attach/20.mp3",
+            ["元の脚本です。"],
+            [MODULE.Chunk(start=0.0, end=1.0, text="元の脚本です。")],
+            Path("20.mp3"),
+            offline_dictionary=MODULE.StaticAccentDictionary({}),
+            audio_slice_refs=["attach/20_S01.m4a"],
+            listening_mode="intensive",
+            learning_blocks=blocks,
+        )
+
+        package = body.split("## 脚本", 1)[0]
+        self.assertIn("A：最近、冷えますね。\nB：本当に寒くなりましたね。", package)
+        self.assertNotIn("元の脚本です。", package)
+
     def test_process_one_preserves_intentionally_empty_common_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -534,7 +762,16 @@ class TranscribeListeningTests(unittest.TestCase):
             }
 
             with mock.patch.object(MODULE, "invoke_listenkit", return_value=payload) as invoke_mock:
-                result = MODULE.process_one(audio_path, None, "ja-JP", "田中です", True)
+                result = MODULE.process_one(
+                    audio_path,
+                    None,
+                    "ja-JP",
+                    "田中です",
+                    True,
+                    offline_dictionary=MODULE.StaticAccentDictionary(
+                        {"渡辺": "わたなべ⓪", "田中": "たなか⓪", "山田": "やまだ⓪", "部屋": "へや②"}
+                    ),
+                )
 
             invoke_mock.assert_called_once()
             self.assertEqual(invoke_mock.call_args.args[2], "auto")
