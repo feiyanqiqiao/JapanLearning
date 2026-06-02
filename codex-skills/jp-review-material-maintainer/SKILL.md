@@ -317,6 +317,11 @@ python3 codex-skills/jp-review-material-maintainer/scripts/apply-accent-confirma
 
 Path: `学习系统/语法/<pattern>.md`
 
+Template source of truth:
+
+- read `系统配置/模板/课堂语法卡模板.md` before creating or substantially rewriting a grammar card
+- keep the complete grammar-card template in that local Obsidian note; this skill only stores the non-negotiable generation rules
+
 Required properties:
 
 - `track: class_review`
@@ -340,8 +345,10 @@ Required properties:
 
 Linking rule for grammar cards:
 
-- when a grammar card has a real comparison target, populate `contrast_with`
-- also add Obsidian wikilinks in `## 核心` or `## 易错 / 易混` so the contrast is visible during review
+- search for exact-name and comparison candidates before creating a grammar card
+- when a grammar card has a real existing comparison target, populate `contrast_with`
+- also add Obsidian wikilinks in `## 核心` or `## 易错 / 易混` so the existing contrast is visible during review
+- when a useful comparison card does not exist, list its name as plain text under `## 待补卡`; do not add a dangling wikilink or populate `contrast_with`
 - default to linking high-confusion neighbors, near-synonyms, or cards that are explicitly easier to remember side by side
 - keep cards separate unless they are genuinely one teaching point; prefer cross-links over forced merging
 
@@ -353,18 +360,34 @@ Expected tags:
 
 Body shape to preserve:
 
+- `# <语法>`
+- `## 快速复习`
+- `## 语域与使用场景`
 - `## 核心`
-- `## 例句`
+- `## 接续、用法与例句`
 - optional `## 易错 / 易混`
+- optional `## 待补卡`
+- optional `## 待确认`
 - `## 来源`
 
 Naming rules:
 
 - default to the canonical pattern name
 - allow a grouped grammar note only when the items are clearly one teaching point:
-  - paired contrasts
   - one compact paradigm
   - one honorific mapping set
+
+Generation rules:
+
+- write `formation` as a YAML list, including for grammar cards with one formation
+- write explanations in simplified Chinese
+- describe register and common usage contexts; include JLPT level only when reliable
+- keep formation, usage, and examples together inside each usage branch under `## 接续、用法与例句`
+- provide two natural Japanese examples per usage branch by default: one basic example and one natural-context example; use at most three for a complex branch
+- keep example sentences in Japanese; add short Chinese translations only for difficult sentences or contrast examples
+- for a direct user request without a source note, keep `source_notes: []` and write `用户直接录入；大模型整理` under `## 来源`
+- if the core meaning or a main formation is uncertain, stop and ask the user before creating the card
+- use optional `## 待确认` only for secondary uncertainties that do not undermine the core meaning or main formation
 
 ### Error Card
 
@@ -535,7 +558,7 @@ When splitting a classroom note:
 3. normalize obvious variants before searching
 4. for each word, follow the canonical search order
 5. default classroom vocabulary to focus review first, then only touch the base lexicon when restoring prior history or sinking a mastered word
-6. collect explicit grammar items from `文法` and route them to grammar cards
+6. collect explicit grammar items from `文法`, read `系统配置/模板/课堂语法卡模板.md`, search exact-name and comparison candidates, then route them to grammar cards
 7. split `間違えた問題` into:
    - grammar-card updates when the mistake strengthens an existing pattern card
    - error-card creation or updates for the concrete misunderstanding itself
@@ -566,6 +589,7 @@ After edits:
 - check that frontmatter keys match the intended layer
 - check that focus-card words also exist in the base lexicon as `promoted`
 - check that grammar cards keep `pattern` as the naming anchor
+- check that newly created or substantially rewritten grammar cards follow `系统配置/模板/课堂语法卡模板.md`, use a YAML list for `formation`, and do not add dangling comparison links
 - check that error cards keep one clear wrong/correct pair and do not duplicate an existing misunderstanding under a new filename
 - avoid duplicate notes across the two layers with conflicting names
 - if a `.base` file was changed, validate it with the `obsidian-bases` workflow
