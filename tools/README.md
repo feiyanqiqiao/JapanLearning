@@ -16,7 +16,7 @@
 - 生成或更新 Obsidian 聽力筆記。
 - 管理素材目錄下的 `attach/` 與 `artifacts/`。
 - 區分泛聽與精聽模式。
-- 在精聽模式下生成逐句切片引用。
+- 在精聽模式下生成學習語塊 manifest，並調用 ListenKit 導出真實切片。
 - 加入可確認的重音資訊，並保留既有人工修訂內容。
 
 何時使用：
@@ -43,13 +43,26 @@ jp-listening-script-generator
   -> run-listening-transcribe.sh
   -> tools/listening-transcribe-official/transcribe_listening.py
   -> ../ListenKit/cli/generate-markdown.sh
+  -> ../ListenKit/cli/export-audio-slices.py
 ```
 
 依賴：
 
 - Skill wrapper：`codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh`
 - 通用轉寫能力：`../ListenKit/cli/generate-markdown.sh`
+- 通用時間範圍切片能力：`../ListenKit/cli/export-audio-slices.py`
 - 離線詞典快取：由 `setup_offline_dictionary.py` 維護。
+- Python runtime：Apple Silicon macOS 預設優先使用 `/opt/homebrew/bin/python3`；需要覆蓋時設定 `JP_LISTENING_PYTHON`。
+
+#### 精聽學習語塊
+
+精聽稿統一使用學習語塊，不直接把 ASR chunks 當作切片單位：
+
+- 一般精聽材料預設按自然句切片。
+- 編號 Shadowing 材料預設按完整對話組切片，報號只作為邊界。
+- 自動切分不可靠時，使用 `--slice-manifest PATH` 提供人工校正後的時間範圍。
+
+生成器將 manifest 寫入素材目錄下的 `artifacts/<audio_stem>.slices.json`，再交給 ListenKit 導出 `attach/<audio_stem>_SNN.m4a`。`segment_count`、學習包區塊、embed 和實際非空文件數量必須一致。
 
 #### 常用句邊界
 

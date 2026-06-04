@@ -96,6 +96,15 @@ class ScriptBlock:
     text: str | None = None
 
 
+@dataclass
+class LearningBlock:
+    id: str
+    text: str
+    start: float
+    end: float
+    kind: str
+
+
 class OfflineDictionaryError(RuntimeError):
     pass
 
@@ -272,6 +281,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--faster-whisper-model", default=DEFAULT_FASTER_WHISPER_MODEL)
     parser.add_argument("--faster-whisper-compute-type", default=DEFAULT_FASTER_WHISPER_COMPUTE_TYPE)
     parser.add_argument("--listening-mode", choices=sorted(LISTENING_MODES))
+    parser.add_argument("--slice-manifest")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--scan-dir")
     return parser.parse_args()
@@ -286,6 +296,10 @@ def listenkit_root() -> Path:
 
 def listenkit_generate_markdown_script_path() -> Path:
     return listenkit_root() / "cli" / "generate-markdown.sh"
+
+
+def listenkit_export_audio_slices_script_path() -> Path:
+    return listenkit_root() / "cli" / "export-audio-slices.py"
 
 
 def slugify_stem(value: str) -> str:
@@ -1325,13 +1339,14 @@ def render_audio_slice_line(audio_slice_ref: str | None) -> str:
 
 
 def build_learning_package(
-    sentences: list[str],
+    sentences: list[str] | list[LearningBlock],
     confirmed_accent_index: dict[str, str],
     offline_dictionary: StaticAccentDictionary,
     audio_slice_refs: list[str | None] | None = None,
 ) -> str:
     blocks: list[str] = []
-    for idx, sentence in enumerate(sentences, start=1):
+    for idx, item in enumerate(sentences, start=1):
+        sentence = item.text if isinstance(item, LearningBlock) else item
         terms = select_focus_terms(sentence, confirmed_accent_index, offline_dictionary)
         accented_sentence, _accent_notes = inline_accent_marks(
             sentence,
@@ -1387,6 +1402,223 @@ def reliable_sentence_chunks(sentences: list[str], chunks: list[Chunk]) -> list[
         if clean_transcript_text(sentence) != clean_transcript_text(chunk.text):
             return None
     return chunks
+
+
+def learning_block_id(index: int) -> str:
+    return f"S{index:02d}"
+
+
+def chunk_text_for_alignment(chunk: Chunk) -> str:
+    return clean_transcript_text(chunk.text)
+
+
+def timestamp_for_text_offset(chunks: list[Chunk], offset: int, *, end_boundary: bool) -> float | None:
+    cursor = 0
+    for chunk in chunks:
+        text = chunk_text_for_alignment(chunk)
+        next_cursor = cursor + len(text)
+        if not text:
+            continue
+        if offset < next_cursor or (end_boundary and offset == next_cursor):
+            if chunk.start is None or chunk.end is None or chunk.end <= chunk.start:
+                return None
+            ratio = (offset - cursor) / len(text)
+            return round(chunk.start + (chunk.end - chunk.start) * ratio, 6)
+        cursor = next_cursor
+    if offset == cursor and chunks:
+        return chunks[-1].end
+    return None
+
+
+def sentence_learning_blocks(sentences: list[str], chunks: list[Chunk]) -> list[LearningBlock] | None:
+    sentence_texts = [clean_transcript_text(sentence) for sentence in sentences]
+    chunk_texts = [chunk_text_for_alignment(chunk) for chunk in chunks]
+    if not sentence_texts or "".join(sentence_texts) != "".join(chunk_texts):
+        return None
+
+    blocks: list[LearningBlock] = []
+    cursor = 0
+    for index, (sentence, aligned_text) in enumerate(zip(sentences, sentence_texts), start=1):
+        next_cursor = cursor + len(aligned_text)
+        start = timestamp_for_text_offset(chunks, cursor, end_boundary=False)
+        end = timestamp_for_text_offset(chunks, next_cursor, end_boundary=True)
+        if start is None or end is None or end <= start:
+            return None
+        blocks.append(LearningBlock(id=learning_block_id(index), text=sentence, start=start, end=end, kind="sentence"))
+        cursor = next_cursor
+    return blocks
+
+
+FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
+KANJI_NUMBER_LABELS = {
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+
+
+def parse_group_number(text: str) -> int | None:
+    normalized = normalize_shadowing_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+    if normalized in KANJI_NUMBER_LABELS:
+        return KANJI_NUMBER_LABELS[normalized]
+    if re.fullmatch(r"\d+", normalized):
+        return int(normalized)
+    return None
+
+
+def shadowing_learning_blocks(chunks: list[Chunk]) -> list[LearningBlock] | None:
+    blocks: list[LearningBlock] = []
+    current_number: int | None = None
+    utterances: list[str] = []
+    start: float | None = None
+    end: float | None = None
+
+    def flush() -> bool:
+        nonlocal current_number, utterances, start, end
+        if current_number is None:
+            return True
+        if not utterances or start is None or end is None or end <= start:
+            return False
+        blocks.append(
+            LearningBlock(
+                id=learning_block_id(len(blocks) + 1),
+                text="\n".join(utterances),
+                start=start,
+                end=end,
+                kind="numbered-dialogue",
+            )
+        )
+        current_number = None
+        utterances = []
+        start = None
+        end = None
+        return True
+
+    expected_number = 1
+    for chunk in chunks:
+        text = normalize_shadowing_text(chunk.text)
+        if not text or text.startswith("セクション"):
+            continue
+        number = parse_group_number(text)
+        if number is not None:
+            if not flush() or number != expected_number:
+                return None
+            current_number = number
+            expected_number += 1
+            continue
+        numbered = re.match(r"^([0-9０-９]+)[.。]\s*(.+)$", text)
+        if numbered:
+            if not flush() or int(numbered.group(1).translate(FULLWIDTH_DIGIT_TRANSLATION)) != expected_number:
+                return None
+            current_number = expected_number
+            expected_number += 1
+            text = numbered.group(2)
+        if current_number is None or chunk.start is None or chunk.end is None or chunk.end <= chunk.start:
+            return None
+        utterances.append(text)
+        start = chunk.start if start is None else start
+        end = chunk.end
+
+    if not flush() or not blocks:
+        return None
+    return blocks
+
+
+def automatic_learning_blocks(audio_path: Path, sentences: list[str], chunks: list[Chunk]) -> list[LearningBlock] | None:
+    if is_shadowing_path(audio_path):
+        return shadowing_learning_blocks(chunks)
+    return sentence_learning_blocks(sentences, chunks)
+
+
+def load_manual_learning_blocks(path: Path, automatic_blocks: list[LearningBlock]) -> list[LearningBlock]:
+    payload = load_listenkit_json(path)
+    if payload.get("version") != 1:
+        raise RuntimeError("Slice manifest field 'version' must be 1.")
+    raw_slices = payload.get("slices")
+    if not isinstance(raw_slices, list) or not raw_slices:
+        raise RuntimeError("Slice manifest field 'slices' must be a non-empty list.")
+    automatic_by_id = {block.id: block for block in automatic_blocks}
+    blocks: list[LearningBlock] = []
+    seen_ids: set[str] = set()
+    previous_end: float | None = None
+    for raw in raw_slices:
+        if not isinstance(raw, dict):
+            raise RuntimeError("Each slice manifest entry must be an object.")
+        block_id = str(raw.get("id", ""))
+        if not re.fullmatch(r"S\d{2,}", block_id):
+            raise RuntimeError(f"Slice id must match SNN: {block_id!r}")
+        if block_id in seen_ids:
+            raise RuntimeError(f"Duplicate slice id: {block_id}")
+        start = raw.get("start")
+        end = raw.get("end")
+        if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            raise RuntimeError(f"Slice {block_id} start/end must be numbers.")
+        start_value = float(start)
+        end_value = float(end)
+        if start_value < 0 or end_value <= start_value:
+            raise RuntimeError(f"Slice {block_id} must satisfy 0 <= start < end.")
+        if previous_end is not None and start_value < previous_end:
+            raise RuntimeError(f"Slice {block_id} overlaps the previous slice.")
+        fallback = automatic_by_id.get(block_id)
+        text = str(raw.get("text", "")).strip() or (fallback.text if fallback else "")
+        if not text:
+            raise RuntimeError(f"Slice {block_id} needs text when automatic grouping cannot supply it.")
+        seen_ids.add(block_id)
+        blocks.append(LearningBlock(id=block_id, text=text, start=start_value, end=end_value, kind="manual"))
+        previous_end = end_value
+    return blocks
+
+
+def slice_manifest_path(audio_path: Path) -> Path:
+    return material_dir_for_audio(audio_path) / "artifacts" / f"{audio_path.stem}.slices.json"
+
+
+def write_slice_manifest(path: Path, blocks: list[LearningBlock]) -> None:
+    payload = {
+        "version": 1,
+        "slices": [{"id": block.id, "start": block.start, "end": block.end} for block in blocks],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def export_learning_block_slices(audio_path: Path, blocks: list[LearningBlock], manifest_path: Path) -> list[str]:
+    command = [
+        sys.executable,
+        str(listenkit_export_audio_slices_script_path()),
+        "--input",
+        str(audio_path),
+        "--manifest",
+        str(manifest_path),
+        "--output-dir",
+        str(slice_attach_dir(audio_path)),
+        "--padding-seconds",
+        "0.15",
+        "--overwrite",
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "ListenKit slice export failed.")
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ListenKit slice export returned invalid JSON: {exc}") from exc
+    slices = report.get("slices")
+    if not isinstance(slices, list) or len(slices) != len(blocks):
+        raise RuntimeError("ListenKit slice export report count does not match learning blocks.")
+    refs: list[str] = []
+    for block, item in zip(blocks, slices):
+        if item.get("id") != block.id or item.get("status") != "exported":
+            raise RuntimeError(f"ListenKit slice export report is invalid for {block.id}.")
+        refs.append(f"attach/{Path(str(item.get('path', ''))).name}")
+    return refs
 
 
 def slice_attach_dir(audio_path: Path) -> Path:
@@ -1566,6 +1798,7 @@ def build_body(
     offline_dictionary: StaticAccentDictionary | None = None,
     audio_slice_refs: list[str | None] | None = None,
     listening_mode: str = "intensive",
+    learning_blocks: list[LearningBlock] | None = None,
 ) -> tuple[str, bool]:
     script_section, dialogue_content_mode = render_dialogue_script_section(sentences, chunks, structured_dialogue_mode)
     existing_sections = parse_sections(existing_body or "")
@@ -1592,7 +1825,7 @@ def build_body(
         learning_package = None
     else:
         learning_package = build_learning_package(
-            sentences,
+            learning_blocks or sentences,
             accent_index,
             dictionary,
             audio_slice_refs,
@@ -1637,6 +1870,29 @@ def render_note(frontmatter_lines: list[str], body: str) -> str:
     return "---\n" + "\n".join(frontmatter_lines) + "\n---\n\n" + body + "\n"
 
 
+def validate_intensive_slice_output(
+    audio_path: Path,
+    blocks: list[LearningBlock],
+    audio_slice_refs: list[str],
+    body: str,
+) -> None:
+    expected = len(blocks)
+    heading_count = len(re.findall(r"^### S\d{2,}$", body, flags=re.MULTILINE))
+    embed_count = len(re.findall(r"!\[\[attach/[^]]+_S\d{2,}\.m4a\]\]", body))
+    if "（语音切片待生成）" in body:
+        raise RuntimeError("Intensive note still contains audio-slice placeholders.")
+    if len(audio_slice_refs) != expected or heading_count != expected or embed_count != expected:
+        raise RuntimeError(
+            "Intensive slice verification failed: "
+            f"learning_blocks={expected}, refs={len(audio_slice_refs)}, headings={heading_count}, embeds={embed_count}."
+        )
+    material_dir = material_dir_for_audio(audio_path)
+    for ref in audio_slice_refs:
+        output_path = material_dir / ref
+        if not output_path.is_file() or output_path.stat().st_size <= 0:
+            raise RuntimeError(f"Intensive slice verification failed: missing or empty file: {output_path}")
+
+
 def process_one(
     audio_path: Path,
     note_override: str | None,
@@ -1651,6 +1907,7 @@ def process_one(
     source_url: str | None = None,
     offline_dictionary: StaticAccentDictionary | None = None,
     listening_mode: str | None = None,
+    slice_manifest_override: str | None = None,
 ) -> str:
     if candidate_route is None:
         candidate, route_label = transcribe_with_heuristics(
@@ -1717,15 +1974,27 @@ def process_one(
     resolved_listening_mode = resolve_listening_mode(listening_mode, frontmatter_lines, existing_body or "")
     if frontmatter_lines:
         set_scalar(frontmatter_lines, "listening_mode", resolved_listening_mode)
-    sentence_chunks = reliable_sentence_chunks(sentences, candidate.segments)
+    learning_blocks: list[LearningBlock] | None = None
     audio_slice_refs = None
-    if resolved_listening_mode == "intensive" and sentence_chunks is not None and not dry_run:
-        audio_slice_refs = export_sentence_audio_slices(
-            audio_path,
-            sentence_chunks,
-            slice_attach_dir(audio_path),
-            audio_path.stem,
-        )
+    if resolved_listening_mode == "intensive":
+        automatic_blocks = automatic_learning_blocks(audio_path, sentences, candidate.segments)
+        if slice_manifest_override:
+            manifest_path = Path(slice_manifest_override).expanduser()
+            learning_blocks = load_manual_learning_blocks(manifest_path, automatic_blocks or [])
+        else:
+            manifest_path = slice_manifest_path(audio_path)
+            learning_blocks = automatic_blocks
+        if not learning_blocks:
+            raise RuntimeError(
+                "Unable to derive reliable intensive learning blocks from transcript timestamps. "
+                "Provide a reviewed --slice-manifest with explicit ranges and text."
+            )
+        if frontmatter_lines:
+            set_scalar(frontmatter_lines, "segment_count", str(len(learning_blocks)))
+        if not dry_run:
+            if not slice_manifest_override:
+                write_slice_manifest(manifest_path, learning_blocks)
+            audio_slice_refs = export_learning_block_slices(audio_path, learning_blocks, manifest_path)
     body, dialogue_content_mode = build_body(
         title,
         audio_ref_for_note(audio_path),
@@ -1740,11 +2009,14 @@ def process_one(
         offline_dictionary or load_offline_dictionary(required=False),
         audio_slice_refs,
         resolved_listening_mode,
+        learning_blocks,
     )
+    if resolved_listening_mode == "intensive" and not dry_run:
+        validate_intensive_slice_output(audio_path, learning_blocks or [], audio_slice_refs or [], body)
     if not frontmatter_lines:
         frontmatter_lines = build_default_frontmatter(
             audio_path,
-            len(sentences),
+            len(learning_blocks) if learning_blocks is not None else len(sentences),
             short_choice_mode,
             dialogue_content_mode,
             resolved_listening_mode,
@@ -1769,6 +2041,7 @@ def process_url(
     audio_format: str = "m4a",
     offline_dictionary: StaticAccentDictionary | None = None,
     listening_mode: str | None = None,
+    slice_manifest_override: str | None = None,
 ) -> str:
     output_stem = infer_stem_from_url(url)
     env_overrides = {}
@@ -1802,6 +2075,7 @@ def process_url(
         source_url=url,
         offline_dictionary=offline_dictionary,
         listening_mode=listening_mode,
+        slice_manifest_override=slice_manifest_override,
     )
     if dry_run:
         return f"Source URL: {url}\nFinal audio: {final_audio_path}\n{result}"
@@ -1853,6 +2127,7 @@ def main() -> int:
             args.format,
             offline_dictionary,
             args.listening_mode,
+            args.slice_manifest,
         )
         print(result)
         return 0
@@ -1870,6 +2145,7 @@ def main() -> int:
             args.faster_whisper_compute_type,
             offline_dictionary=offline_dictionary,
             listening_mode=args.listening_mode,
+            slice_manifest_override=args.slice_manifest,
         )
         print(result)
         return 0
