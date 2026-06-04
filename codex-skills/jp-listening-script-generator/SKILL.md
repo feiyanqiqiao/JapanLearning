@@ -1,6 +1,6 @@
 ---
 name: jp-listening-script-generator
-description: Use when turning one local audio file or media URL into this vault's fixed Japanese listening-practice note format, including 泛听, 精听, and Shadowing dialogue-group rebuilds with missing slices. Do not use for flexible source notes, general study notes from transcripts, or review card creation and maintenance.
+description: Use when turning one local audio file or media URL into this vault's fixed Japanese listening-practice note format, including 泛听, 精听 learning blocks, Shadowing dialogue-group slices, and missing-slice repair. Do not use for flexible source notes, general study notes from transcripts, or review card creation and maintenance.
 ---
 
 # JP Listening Script Generator
@@ -35,13 +35,14 @@ Prefer single-item processing first. The main path is:
    - the CLI requires a prepared offline dictionary cache for inline accent candidates; if it is missing, run the setup script described below
    - default mode is `extensive` 泛听: the note has an accent-marked `## 脚本` but no `## 精听学习包` and no sentence slices
    - use `--listening-mode intensive` for 精听: the note includes `## 精听学习包` before the plain `## 脚本`
-   - each intensive learning block uses only `### SNN`, the accent-marked sentence, and the sentence audio embed
+   - each intensive learning block uses only `### SNN`, the accent-marked text, and the real learning-block audio embed
 5. unless the user explicitly asked for `--dry-run`, immediately enter a second editing phase:
    - read the generated `## 脚本`
    - use model judgment to choose `0-5` truly reusable sentences
    - write the final `## 可直接背的常用句`
    - sync frontmatter `daily_use_sentences`
-6. only then treat the note as complete
+6. for `intensive`, verify that `segment_count`, `### SNN` blocks, embeds, and real non-empty slice files all match
+7. only then treat the note as complete
 
 For `Shadowing_初中級` intensive notes, completion also requires real dialogue-group audio files. A Markdown draft with `（语音切片待生成）` placeholders is an intermediate artifact, not a finished note. Follow the Shadowing fallback procedure below whenever automatic export does not create every requested slice.
 
@@ -71,6 +72,7 @@ The generator delegates transcript acquisition to ListenKit's Markdown workflow 
 - `--engine faster-whisper` explicitly requests ListenKit's faster-whisper route
 - URL input treats `--output-dir` as the material directory: finalized audio goes into its `attach/`, raw ListenKit `.listenkit.md/.json` artifacts go into `artifacts/`, and the learning note stays at the material-directory root
 - local audio under `attach/` also generates or updates the learning note at the parent material-directory root; legacy root-level local audio input remains readable during migration
+- ListenKit's `cli/export-audio-slices.py` exports real learning-block clips from an explicit time-range manifest; do not bypass it with raw `ffmpeg` calls
 
 The vault wrapper passes ListenKit's `--auto-init` flag for the default/faster-whisper route. On first use, ListenKit may create `../ListenKit/.venv` and install faster-whisper; do not create `.venv` manually from the vault parent directory.
 
@@ -80,6 +82,8 @@ zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.
 ```
 
 Set `FASTER_WHISPER_PYTHON=/path/to/python` only when intentionally overriding ListenKit's repo-local environment.
+
+Set `JP_LISTENING_PYTHON=/path/to/python3` only when intentionally overriding the vault wrapper's Python runtime. On Apple Silicon macOS, the wrapper prefers `/opt/homebrew/bin/python3` when available so the offline dictionary cache and generator use the same Python ABI.
 
 The current local test setup uses:
 
@@ -164,13 +168,14 @@ The generated note has two modes. Default is `extensive`; use `--listening-mode 
 - render `## 素材说明`
 - prefer a topic-bearing filename such as `manabo_cz18_土用の丑の日とうなぎ.md`, not a generic `识别稿`
 - do not rely on rule-based extraction for `可直接背的常用句`; use model judgment after the script is generated
-- in `extensive`, do not render `## 精听学习包`, do not generate sentence slices, and inline known accent marks directly in `## 脚本`
+- in `extensive`, do not render `## 精听学习包`, do not generate learning-block slices, and inline known accent marks directly in `## 脚本`
 - in `intensive`, render `## 精听学习包`; each block is `### SNN`, blank line, the accent-marked sentence, blank line, then the sentence audio embed
 - in `intensive`, keep `## 脚本` as the plain script without forced accent marks
-- in `intensive`, embed the sentence audio clip as `![[attach/audio_stem_SNN.m4a]]`; when there is no reliable timestamp, write only `（语音切片待生成）`
+- in `intensive`, embed the learning-block audio clip as `![[attach/audio_stem_SNN.m4a]]`
+- an `intensive` draft containing `（语音切片待生成）` is incomplete; repair the manifest or report the unresolved timestamp problem explicitly
 - do not show `已确认`, `本地候选`, or `待确认` source labels inside the note body; use those labels only for internal selection and separate accent-review work
 - for accent data, prefer the vault's existing confirmed `accent_display`; otherwise use offline dictionary candidates and label them `本地候选`; unknown items must be `待确认`
-- export sentence clips only when reliable start/end timestamps are available; do not fabricate clips from uncertain alignment
+- export learning-block clips only when reliable start/end timestamps are available; do not fabricate clips from uncertain alignment
 - do not write `本地候选` accent values back into vocabulary cards as confirmed data
 - for `可直接背的常用句`, prefer quality over quantity: 0-5 items is acceptable, and long sentences are allowed when the pattern is worth memorizing
 - render each selected common sentence in this structured format, without a Chinese translation field:
@@ -195,37 +200,31 @@ For dialogue-type listening content, apply a dialogue template layer on top of t
 - do not invent `C：` or multi-speaker labels unless the ListenKit transcript artifact provides reliable speaker metadata
 - in dialogue-type notes, prefer `可直接背的常用句` selections that are reusable question templates, response templates, and social or situational exchanges
 
-## Shadowing Dialogue-Group Intensive Fallback
+## Intensive Learning Blocks And Slice Manifests
 
-For intensive notes under `学习系统/听力/Shadowing_初中級`, treat each complete dialogue group as the slice unit. Do not assume one ASR chunk equals one study slice. A group may contain several alternating turns.
+Use one learning-block model for every intensive note:
 
-Use this fallback whenever the user asks for `每組對話一個切片`, or when the draft contains `（语音切片待生成）`, missing embeds, or the wrong `segment_count`:
+- general intensive material: default to one natural sentence per block
+- numbered `Shadowing_*` material: default to one complete numbered dialogue per block, even when it spans several ASR chunks
+- manually reviewed material: allow AI or human edits to block boundaries through `--slice-manifest PATH`
 
-1. Run the normal transcription wrapper with `--listening-mode intensive`.
-2. Open the generated ListenKit JSON artifact and inspect the timestamped chunks.
-3. Rebuild the intended dialogue groups from the transcript structure. Exclude section labels and group-number announcements from the spoken dialogue text, while using their timestamps as boundaries when useful.
-4. Derive one reliable start/end range per dialogue group from the underlying chunks.
-5. Export one real clip per group into the note's sibling `attach/` directory:
+The generated manifest lives at `artifacts/<audio_stem>.slices.json`. It contains explicit `SNN`, `start`, and `end` values. ListenKit owns deterministic clip export; this skill owns semantic grouping, accent rendering, Obsidian embeds, and final verification.
+
+For numbered Shadowing material:
+
+- use `セクションN` and spoken group numbers only as boundaries
+- exclude the spoken group number from the exported clip
+- stop and request a reviewed `--slice-manifest` when numbering, order, or timestamps are unreliable
+- never mark the note complete while placeholders or missing `SNN.m4a` files remain
+
+Example manual override:
 
 ```bash
-ffmpeg -hide_banner -loglevel error -y \
-  -ss START_SECONDS -to END_SECONDS \
-  -i "attach/audio.mp3" \
-  -c:a aac -b:a 128k "attach/audio_S01.m4a"
+zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh \
+  "学习系统/听力/Shadowing_初中級/Unit2/attach/20.mp3" \
+  --listening-mode intensive \
+  --slice-manifest "学习系统/听力/Shadowing_初中級/Unit2/artifacts/20.slices.json"
 ```
-
-6. Replace every placeholder with the matching embed:
-
-```md
-![[attach/audio_S01.m4a]]
-```
-
-7. Verify all three counts match before treating the note as complete:
-   - frontmatter `segment_count`
-   - number of `### SNN` blocks and embeds
-   - number of real `attach/audio_SNN.m4a` files
-
-Do not stop after generating a polished Markdown note. If reliable group boundaries cannot be recovered from the transcript timestamps, keep the placeholders and explicitly report that the intensive note remains incomplete.
 
 ## Second-Phase Editing Rules
 

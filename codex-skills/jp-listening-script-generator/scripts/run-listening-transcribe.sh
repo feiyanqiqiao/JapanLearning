@@ -22,4 +22,13 @@ if [[ -z "${ROOT}" ]]; then
   exit 1
 fi
 
-/usr/bin/python3 "${ROOT}/tools/listening-transcribe-official/transcribe_listening.py" "$@"
+PYTHON_BIN="${JP_LISTENING_PYTHON:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if [[ -x "/opt/homebrew/bin/python3" ]]; then
+    PYTHON_BIN="/opt/homebrew/bin/python3"
+  else
+    PYTHON_BIN="$(command -v python3)"
+  fi
+fi
+
+"${PYTHON_BIN}" "${ROOT}/tools/listening-transcribe-official/transcribe_listening.py" "$@"
