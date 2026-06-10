@@ -3,8 +3,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
+import sys
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.config_loader import load_config, get_pronunciation_system
 
 
 ACCENT_RE = re.compile(r"[⓪①②③④⑤⑥⑦⑧⑨]")
@@ -108,7 +114,32 @@ def main() -> int:
         help="CSV generated for the full accent audit.",
     )
     parser.add_argument("--write", action="store_true", help="Write changes. Omit for dry-run.")
+    parser.add_argument(
+        "--vault-root",
+        default=".",
+        help="Vault root directory for loading config.json.",
+    )
+    parser.add_argument(
+        "--config",
+        default="系统配置/config.json",
+        help="Path to config.json for language configuration.",
+    )
     args = parser.parse_args()
+
+    # Load language configuration
+    vault_root = Path(args.vault_root).resolve()
+    try:
+        config = load_config(vault_root, args.config)
+        pronunciation_system = get_pronunciation_system(config)
+    except Exception:
+        # Fallback to pitch_accent for backward compatibility
+        pronunciation_system = "pitch_accent"
+
+    # Check if this language uses pitch accent system
+    if pronunciation_system != "pitch_accent":
+        print(f"Skipped: accent confirmation is only applicable for pitch_accent pronunciation system.")
+        print(f"Current system: {pronunciation_system}")
+        return 0
 
     csv_path = Path(args.csv_path)
     if not csv_path.exists():

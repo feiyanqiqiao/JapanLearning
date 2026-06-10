@@ -1,27 +1,27 @@
 ---
-name: jp-review-material-maintainer
-description: Use when creating or updating Japanese review materials in this Obsidian vault, such as vocabulary, grammar, pronunciation, error cards, or daily study checklist entries. Do not use for survival-speaking cards, listening transcription, flexible source notes, or end-of-day review rollover.
+name: review-material-maintainer
+description: Use when creating or updating review materials in this Obsidian vault, such as vocabulary, grammar, pronunciation, error cards, or daily study checklist entries. Do not use for survival-speaking cards, listening transcription, flexible source notes, or end-of-day review rollover.
 ---
 
-# JP Review Material Maintainer
+# Review Material Maintainer
 
 Use this skill when the task is to extract, create, update, merge, or promote review material in this vault, including vocabulary notes, grammar cards, pronunciation cards, error cards, and daily study checklist entries.
 
-Do not use this skill for survival-speaking cards, listening transcription, flexible study source notes from media or transcripts, or end-of-day review rollover. Use `jp-survival-speaking-card-generator`, `jp-listening-script-generator`, `jp-source-note-generator`, or `jp-next-day-review-updater` for those tasks.
+Do not use this skill for survival-speaking cards, listening transcription, flexible study source notes from media or transcripts, or end-of-day review rollover. Use `survival-speaking-card-generator`, `listening-script-generator`, `source-note-generator`, or `next-day-review-updater` for those tasks.
 
 ## Maintenance Source Of Truth
 
 The project copy is the source of truth:
 
-- source: `codex-skills/jp-review-material-maintainer/`
-- installed copy: `~/.codex/skills/jp-review-material-maintainer/`
+- source: `agent-skills/review-material-maintainer/`
+- installed copy: `~/.codex/skills/review-material-maintainer/`
 
 Edit the project copy first, then sync it to the global skill directory.
 
 Default sync command:
 
 ```bash
-zsh codex-skills/jp-review-material-maintainer/scripts/sync-to-global.sh
+zsh agent-skills/review-material-maintainer/scripts/sync-to-global.sh
 ```
 
 ## Tool Preferences
@@ -347,8 +347,8 @@ Offline dictionary accent candidates for vocabulary cards:
 When applying a full-vault accent audit, use the generated CSV as the review ledger. Only rows with `nhk_status: confirmed` may be written back. Prefer the safe writer:
 
 ```bash
-python3 codex-skills/jp-review-material-maintainer/scripts/apply-accent-confirmations.py "学习系统/词库/重音标注全量草稿.csv"
-python3 codex-skills/jp-review-material-maintainer/scripts/apply-accent-confirmations.py "学习系统/词库/重音标注全量草稿.csv" --write
+python3 agent-skills/review-material-maintainer/scripts/apply-accent-confirmations.py "学习系统/词库/重音标注全量草稿.csv"
+python3 agent-skills/review-material-maintainer/scripts/apply-accent-confirmations.py "学习系统/词库/重音标注全量草稿.csv" --write
 ```
 
 ### Grammar Card
@@ -531,7 +531,7 @@ All training lines use the same review curve:
 
 `day0 -> day1 -> day3 -> day7 -> day14 -> day30 -> day90 -> day180 -> mastered`
 
-Use `codex-skills/jp-next-day-review-updater/scripts/run-next-day-review-update.sh` for closeout. It scans active training notes, processes only `status: active` and `done_today: true`, and supports `--dry-run` before writing.
+Use `agent-skills/next-day-review-updater/scripts/run-next-day-review-update.sh` for closeout. It scans active training notes, processes only `status: active` and `done_today: true`, and supports `--dry-run` before writing.
 
 Normal advancement:
 

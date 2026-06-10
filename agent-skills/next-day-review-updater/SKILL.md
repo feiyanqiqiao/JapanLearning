@@ -1,27 +1,27 @@
 ---
-name: jp-next-day-review-updater
-description: Use when closing out the day's Japanese review workflow, advancing done_today items, updating next_review dates, or running the scheduled review rollover. Do not use for creating new cards, manual vocabulary organization, transcription, or source-note creation.
+name: next-day-review-updater
+description: Use when closing out the day's review workflow, advancing done_today items, updating next_review dates, or running the scheduled review rollover. Do not use for creating new cards, manual vocabulary organization, transcription, or source-note creation.
 ---
 
-# JP Next-Day Review Updater
+# Next-Day Review Updater
 
-Use this skill when the task is to run the end-of-day review rollover for this Japanese learning vault, either manually or from the scheduled automation.
+Use this skill when the task is to run the end-of-day review rollover for this learning vault, either manually or from the scheduled automation.
 
-Do not use this skill to create new review cards, manually organize vocabulary, generate listening notes, or create flexible source notes. Use `jp-review-material-maintainer`, `jp-listening-script-generator`, or `jp-source-note-generator` for those tasks.
+Do not use this skill to create new review cards, manually organize vocabulary, generate listening notes, or create flexible source notes. Use `review-material-maintainer`, `listening-script-generator`, or `source-note-generator` for those tasks.
 
 ## Maintenance Source Of Truth
 
 The project copy is the source of truth:
 
-- source: `codex-skills/jp-next-day-review-updater/`
-- installed copy: `~/.codex/skills/jp-next-day-review-updater/`
+- source: `agent-skills/next-day-review-updater/`
+- installed copy: `~/.codex/skills/next-day-review-updater/`
 
 Edit the project copy first, then sync it to the global skill directory.
 
 Default sync command:
 
 ```bash
-zsh codex-skills/jp-next-day-review-updater/scripts/sync-to-global.sh
+zsh agent-skills/next-day-review-updater/scripts/sync-to-global.sh
 ```
 
 ## Default Workflow
@@ -72,19 +72,19 @@ Only items with `status: active` and `done_today: true` are advanced. `status: m
 Always use the local wrapper:
 
 ```bash
-zsh codex-skills/jp-next-day-review-updater/scripts/run-next-day-review-update.sh --dry-run
+zsh agent-skills/next-day-review-updater/scripts/run-next-day-review-update.sh --dry-run
 ```
 
 Useful variants:
 
 ```bash
-zsh codex-skills/jp-next-day-review-updater/scripts/run-next-day-review-update.sh
+zsh agent-skills/next-day-review-updater/scripts/run-next-day-review-update.sh
 
-zsh codex-skills/jp-next-day-review-updater/scripts/run-next-day-review-update.sh \
+zsh agent-skills/next-day-review-updater/scripts/run-next-day-review-update.sh \
   --date 2026-04-22 \
   --dry-run
 
-zsh codex-skills/jp-next-day-review-updater/scripts/run-next-day-review-update.sh \
+zsh agent-skills/next-day-review-updater/scripts/run-next-day-review-update.sh \
   --date 2026-04-22 \
   --note-path "笔记/2026.4/2026.4.22.md"
 ```

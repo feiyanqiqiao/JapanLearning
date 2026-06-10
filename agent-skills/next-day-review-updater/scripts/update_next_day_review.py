@@ -10,7 +10,13 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.config_loader import load_config, get_tag_namespace
+from tools.vocab_ops import VocabOps
+
 DEFAULT_PATHS_CONFIG = Path("系统配置/paths.json")
+DEFAULT_CONFIG_PATH = Path("系统配置/config.json")
 
 TRACK_LABELS = {
     "class_review": "重点复习",
@@ -86,7 +92,7 @@ class PathsConfig:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Update next-day review items in the Japanese learning vault.")
+    parser = argparse.ArgumentParser(description="Update next-day review items in the learning vault.")
     parser.add_argument("--vault-root", required=True, help="Absolute path to the vault root.")
     parser.add_argument("--date", help="Run date in YYYY-MM-DD format. Defaults to today.")
     parser.add_argument("--dry-run", action="store_true", help="Show planned updates without writing files.")
@@ -95,6 +101,11 @@ def parse_args() -> argparse.Namespace:
         "--paths-config",
         default=str(DEFAULT_PATHS_CONFIG),
         help="Vault-relative or absolute JSON file containing managed path roles.",
+    )
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="Vault-relative or absolute path to config.json for language configuration.",
     )
     return parser.parse_args()
 
@@ -333,12 +344,18 @@ def render_base_note(
     seen_count: int,
     kanji_diff: str,
     kanji_diff_pairs: list[str],
+    namespace: str = "jp",
 ) -> str:
+    """Render a base vocabulary note with language-agnostic tags.
+
+    Args:
+        namespace: Tag namespace prefix (e.g. 'jp', 'fr'). Defaults to 'jp' for backward compatibility.
+    """
     source_lines = "\n".join(f'- "{source}"' for source in source_notes)
     body_lines = "\n".join(f"- {source}" for source in source_notes)
-    tags = ["jp/vocab", "jp/base_vocab", "jp/class_review", "jp/promoted"]
+    tags = [f"{namespace}/vocab", f"{namespace}/base_vocab", f"{namespace}/class_review", f"{namespace}/promoted"]
     if kanji_diff == "true":
-        tags.append("jp/kanji_diff")
+        tags.append(f"{namespace}/kanji_diff")
     tag_lines = "\n".join(f"- {tag}" for tag in tags)
     kanji_diff_pair_lines = "\n".join(format_frontmatter_list("kanji_diff_pairs", kanji_diff_pairs))
     accent_line = f"accent_display: {accent_display}\n" if accent_display else ""
@@ -368,15 +385,31 @@ def render_base_note(
     )
 
 
-def extract_label(text: str, path: Path) -> str:
-    for key in ("headword", "pattern", "jp_text", "target_text"):
+def extract_label(text: str, path: Path, speaking_text_field: str = "jp_text") -> str:
+    """Extract a display label from the note's frontmatter.
+
+    Args:
+        text: Full note text with frontmatter.
+        path: Path to the note file.
+        speaking_text_field: Configured field name for speaking card text.
+
+    Returns:
+        Extracted label string.
+    """
+    for key in ("headword", "pattern", speaking_text_field, "target_text"):
         value = get_field(text, key, path, required=False).strip().strip('"')
         if value:
             return value
     return path.stem
 
 
-def load_items(paths_config: PathsConfig) -> list[ItemState]:
+def load_items(paths_config: PathsConfig, speaking_text_field: str = "jp_text") -> list[ItemState]:
+    """Load all review items from managed roots.
+
+    Args:
+        paths_config: Paths configuration.
+        speaking_text_field: Configured field name for speaking card text.
+    """
     items: list[ItemState] = []
     for root_path in paths_config.managed_review_roots:
         if not root_path.exists():
@@ -417,7 +450,7 @@ def load_items(paths_config: PathsConfig) -> list[ItemState]:
                     last_reviewed_raw=last_reviewed_raw,
                     first_seen=first_seen,
                     track=track,
-                    label=extract_label(text, path),
+                    label=extract_label(text, path, speaking_text_field),
                 )
             )
     return items
@@ -427,7 +460,12 @@ def is_focus_vocab(item: ItemState) -> bool:
     return item.track == "class_review" and item.item_type == "vocab"
 
 
-def build_base_note_write(base_vocab_root: Path, item: ItemState) -> PendingWrite:
+def build_base_note_write(base_vocab_root: Path, item: ItemState, namespace: str = "jp") -> PendingWrite:
+    """Build a pending write for a base vocabulary note.
+
+    Args:
+        namespace: Tag namespace prefix (e.g. 'jp', 'fr'). Defaults to 'jp' for backward compatibility.
+    """
     if item.new_text is None:
         raise ReviewUpdateError(f"{item.path}: missing updated text for sink operation")
     headword = get_field(item.new_text, "headword", item.path).strip('"')
@@ -457,6 +495,7 @@ def build_base_note_write(base_vocab_root: Path, item: ItemState) -> PendingWrit
                 seen_count,
                 incoming_kanji_diff,
                 incoming_kanji_diff_pairs,
+                namespace=namespace,
             ),
         )
 
@@ -485,16 +524,21 @@ def build_base_note_write(base_vocab_root: Path, item: ItemState) -> PendingWrit
     updated_text = replace_or_insert_frontmatter_list(updated_text, "kanji_diff_pairs", merged_kanji_diff_pairs, base_path)
     for source in merged_sources:
         updated_text = ensure_list_item(updated_text, "source_notes", f'"{source}"', base_path)
-    updated_text = ensure_list_item(updated_text, "tags", "jp/promoted", base_path)
+    updated_text = ensure_list_item(updated_text, "tags", f"{namespace}/promoted", base_path)
     if merged_kanji_diff == "true":
-        updated_text = ensure_list_item(updated_text, "tags", "jp/kanji_diff", base_path)
+        updated_text = ensure_list_item(updated_text, "tags", f"{namespace}/kanji_diff", base_path)
     updated_text = update_body_sources(updated_text, merged_sources)
     return PendingWrite(path=base_path, text=updated_text)
 
 
 def prepare_item_updates(
-    items: Iterable[ItemState], run_date: date, paths_config: PathsConfig
+    items: Iterable[ItemState], run_date: date, paths_config: PathsConfig, namespace: str = "jp"
 ) -> tuple[list[ItemState], dict[str, int], dict[str, int], int, int, list[PendingWrite]]:
+    """Prepare item updates for the review cycle.
+
+    Args:
+        namespace: Tag namespace prefix (e.g. 'jp', 'fr'). Defaults to 'jp' for backward compatibility.
+    """
     processed: list[ItemState] = []
     stage_counts: dict[str, int] = {}
     track_counts = {track: 0 for track in TRACK_LABELS}
@@ -536,7 +580,7 @@ def prepare_item_updates(
             track_counts[item.track] += 1
             if is_focus_vocab(item):
                 mastered_vocab_count += 1
-                base_writes.append(build_base_note_write(paths_config.base_vocab_root, item))
+                base_writes.append(build_base_note_write(paths_config.base_vocab_root, item, namespace=namespace))
             continue
 
         offset_days = STAGE_DAYS[next_stage] if should_advance else allowed_delay
@@ -740,10 +784,17 @@ def main() -> int:
     note_missing = False
 
     try:
+        # Load language configuration
+        config = load_config(vault_root, args.config)
+        namespace = get_tag_namespace(config)
+        speaking_text_field = config["language_profile"].get("speaking_text_field", "jp_text")
+
         paths_config = load_paths_config(vault_root, args.paths_config)
         note_path = resolve_note_path(vault_root, paths_config, run_date, args.note_path)
-        items = load_items(paths_config)
-        processed, stage_counts, track_counts, mastered_vocab_count, delayed_count, base_writes = prepare_item_updates(items, run_date, paths_config)
+        items = load_items(paths_config, speaking_text_field=speaking_text_field)
+        processed, stage_counts, track_counts, mastered_vocab_count, delayed_count, base_writes = prepare_item_updates(
+            items, run_date, paths_config, namespace=namespace
+        )
         new_note: str | None = None
         if note_path.exists():
             original_note = note_path.read_text()
@@ -761,6 +812,7 @@ def main() -> int:
 
     print(f"Run date: {run_date.isoformat()}")
     print(f"Target note: {note_path}")
+    print(f"Language namespace: {namespace}")
     print(f"Processed items: {len(processed)}")
     print(f"Stage transitions: {format_stage_breakdown(stage_counts, mastered_vocab_count)}")
     print(f"Track coverage: {format_track_breakdown(track_counts)}")

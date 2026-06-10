@@ -1,17 +1,17 @@
 # AGENTS.md
 
-This vault is an Obsidian-based Japanese learning system, not a general software repository. Treat notes, frontmatter, wikilinks, Bases, and local Codex skills as part of the user-facing study system.
+This vault is an Obsidian-based learning system, not a general software repository. Treat notes, frontmatter, wikilinks, Bases, and local agent skills as part of the user-facing study system.
 
 ## Primary Entry Points
 
 Use the local skill documents as the source of truth for task-specific behavior:
 
-- Review material maintenance: `codex-skills/jp-review-material-maintainer/SKILL.md`
-- Listening transcription notes: `codex-skills/jp-listening-script-generator/SKILL.md`
-- Survival-speaking cards: `codex-skills/jp-survival-speaking-card-generator/SKILL.md`
-- General study notes from ListenKit/raw scripts: `codex-skills/jp-source-note-generator/SKILL.md`
+- Review material maintenance: `agent-skills/review-material-maintainer/SKILL.md`
+- Listening transcription notes: `agent-skills/listening-script-generator/SKILL.md`
+- Survival-speaking cards: `agent-skills/survival-speaking-card-generator/SKILL.md`
+- General study notes from ListenKit/raw scripts: `agent-skills/source-note-generator/SKILL.md`
 - YouTube/audio export: use sibling `../ListenKit/cli/import-audio.sh`
-- End-of-day review rollover: `codex-skills/jp-next-day-review-updater/SKILL.md`
+- End-of-day review rollover: `agent-skills/next-day-review-updater/SKILL.md`
 
 Do not copy full schemas or workflow details from these files into this document. Read the relevant skill before changing the matching subsystem.
 

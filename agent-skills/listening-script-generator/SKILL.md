@@ -1,27 +1,27 @@
 ---
-name: jp-listening-script-generator
-description: Use when turning one local audio file or media URL into this vault's fixed Japanese listening-practice note format, including 泛听, 精听 learning blocks, Shadowing dialogue-group slices, and missing-slice repair. Do not use for flexible source notes, general study notes from transcripts, or review card creation and maintenance.
+name: listening-script-generator
+description: Use when turning one local audio file or media URL into this vault's fixed listening-practice note format, including 泛听, 精听 learning blocks, Shadowing dialogue-group slices, and missing-slice repair. Do not use for flexible source notes, general study notes from transcripts, or review card creation and maintenance.
 ---
 
-# JP Listening Script Generator
+# Listening Script Generator
 
-Use this skill when the task is to turn one local listening audio file or media URL into the existing listening-practice Markdown note format. Generic ASR and media acquisition are delegated to the sibling `../ListenKit` CLI; this skill keeps only the Obsidian Japanese-learning workflow and note rendering rules.
+Use this skill when the task is to turn one local listening audio file or media URL into the existing listening-practice Markdown note format. Generic ASR and media acquisition are delegated to the sibling `../ListenKit` CLI; this skill keeps only the Obsidian learning workflow and note rendering rules.
 
-Do not use this skill for flexible source notes or general study notes from transcripts, audio, or video; use `jp-source-note-generator` for those. Do not use it for review card creation or maintenance; use `jp-review-material-maintainer`.
+Do not use this skill for flexible source notes or general study notes from transcripts, audio, or video; use `source-note-generator` for those. Do not use it for review card creation or maintenance; use `review-material-maintainer`.
 
 ## Maintenance Source Of Truth
 
 The project copy is the source of truth:
 
-- source: `codex-skills/jp-listening-script-generator/`
-- installed copy: `~/.codex/skills/jp-listening-script-generator/`
+- source: `agent-skills/listening-script-generator/`
+- installed copy: `~/.codex/skills/listening-script-generator/`
 
 Edit the project copy first, then sync it to the global skill directory.
 
 Default sync command:
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/sync-to-global.sh
+zsh agent-skills/listening-script-generator/scripts/sync-to-global.sh
 ```
 
 ## Default Workflow
@@ -77,8 +77,8 @@ The generator delegates transcript acquisition to ListenKit's Markdown workflow 
 The vault wrapper passes ListenKit's `--auto-init` flag for the default/faster-whisper route. On first use, ListenKit may create `../ListenKit/.venv` and install faster-whisper; do not create `.venv` manually from the vault parent directory.
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/attach/04.mp3" --engine faster-whisper --locale ja-JP --dry-run
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz22.mp3" --listening-mode intensive --dry-run
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/attach/04.mp3" --engine faster-whisper --locale ja-JP --dry-run
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz22.mp3" --listening-mode intensive --dry-run
 ```
 
 Set `FASTER_WHISPER_PYTHON=/path/to/python` only when intentionally overriding ListenKit's repo-local environment.
@@ -97,7 +97,7 @@ The current local test setup uses:
 The skill does not implement generic ASR itself. Always call the local Markdown generator through the wrapper; that generator consumes ListenKit's generated transcript artifacts:
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz16.mp3"
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz16.mp3"
 ```
 
 ## Offline Dictionary Setup
@@ -126,7 +126,7 @@ The installer writes Python packages such as `fugashi` and `unidic-lite` under t
 For URL input, choose the target listening directory explicitly:
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh \
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh \
   --url "https://example.com/video" \
   --output-dir "学习系统/听力/来源名"
 ```
@@ -134,10 +134,10 @@ zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.
 Useful variants:
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz16.mp3"
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/N2/202212/attach/example.mp3" --locale ja-JP
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/attach/04.mp3" --engine auto --locale ja-JP
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh --url "https://example.com/video" --output-dir "学习系统/听力/自学素材" --title "素材标题"
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz16.mp3"
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/N2/202212/attach/example.mp3" --locale ja-JP
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/attach/04.mp3" --engine auto --locale ja-JP
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh --url "https://example.com/video" --output-dir "学习系统/听力/自学素材" --title "素材标题"
 ```
 
 The generic transcript workflow lives in ListenKit. Vault code only converts the generated transcript artifacts into the local listening-note format.
@@ -147,8 +147,8 @@ The generic transcript workflow lives in ListenKit. Vault code only converts the
 The explicit Apple Speech route may launch a macOS permission flow through ListenKit. In Codex, that should be treated as a GUI launch, not as a normal sandbox-safe shell command.
 
 - when explicitly using Apple Speech, do not probe this route in the sandbox first
-- request escalated execution on the first Apple Speech invocation of `zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh ...`
-- when the approval UI appears, prefer saving a persistent prefix approval for `["zsh", "codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh"]`
+- request escalated execution on the first Apple Speech invocation of `zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh ...`
+- when the approval UI appears, prefer saving a persistent prefix approval for `["zsh", "agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh"]`
 
 That combination avoids the usual retry pattern of “sandbox run fails first, then ask for approval”.
 
@@ -220,7 +220,7 @@ For numbered Shadowing material:
 Example manual override:
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh \
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh \
   "学习系统/听力/Shadowing_初中級/Unit2/attach/20.mp3" \
   --listening-mode intensive \
   --slice-manifest "学习系统/听力/Shadowing_初中級/Unit2/artifacts/20.slices.json"
@@ -242,7 +242,7 @@ After the draft note exists, the skill should treat common-sentence curation as 
 
 For `Shadowing_*` notes, `## 可直接背的常用句` is only a candidate pool for survival-speaking cards. Do not automatically convert freshly generated or unreviewed common-sentence selections into `学习系统/生活口语/句库`.
 
-Only promote Shadowing common sentences when the user explicitly asks for speaking-card conversion. Hand that task off to `jp-survival-speaking-card-generator`, which owns conservative selection, deduplication, scene placement, backlinks, and optional source-slice embeds.
+Only promote Shadowing common sentences when the user explicitly asks for speaking-card conversion. Hand that task off to `survival-speaking-card-generator`, which owns conservative selection, deduplication, scene placement, backlinks, and optional source-slice embeds.
 
 ## Batch Mode
 

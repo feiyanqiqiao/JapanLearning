@@ -1,25 +1,25 @@
 ---
-name: jp-survival-speaking-card-generator
-description: Use when creating, updating, merging, or promoting survival-speaking cards in this Japanese-learning vault, including manually reviewed Shadowing common sentences and user-provided daily-life phrases.
+name: survival-speaking-card-generator
+description: Use when creating, updating, merging, or promoting survival-speaking cards in this learning vault, including manually reviewed Shadowing common sentences and user-provided daily-life phrases.
 ---
 
-# JP Survival Speaking Card Generator
+# Survival Speaking Card Generator
 
 Use this skill for short, reviewable `track: survival_speaking` cards. Keep the library conservative: a card should represent one sentence or fixed exchange that the learner can directly say or must quickly understand in a clear real-life scene.
 
-Do not use this skill for listening transcription, audio slicing, broad extraction from unreviewed notes, long scene-guide authoring, or review rollover. Use `jp-listening-script-generator`, `jp-source-note-generator`, or `jp-next-day-review-updater` for those tasks.
+Do not use this skill for listening transcription, audio slicing, broad extraction from unreviewed notes, long scene-guide authoring, or review rollover. Use `listening-script-generator`, `source-note-generator`, or `next-day-review-updater` for those tasks.
 
 ## Maintenance Source Of Truth
 
 The project copy is the source of truth:
 
-- source: `codex-skills/jp-survival-speaking-card-generator/`
-- installed copy: `~/.codex/skills/jp-survival-speaking-card-generator/`
+- source: `agent-skills/survival-speaking-card-generator/`
+- installed copy: `~/.codex/skills/survival-speaking-card-generator/`
 
 Edit the project copy first, then sync it to the global skill directory:
 
 ```bash
-zsh codex-skills/jp-survival-speaking-card-generator/scripts/sync-to-global.sh
+zsh agent-skills/survival-speaking-card-generator/scripts/sync-to-global.sh
 ```
 
 ## Accepted Inputs
@@ -57,7 +57,7 @@ This skill may link a speaking card to an existing scene guide. It does not gene
 After creating or updating cards, run:
 
 ```bash
-zsh codex-skills/jp-survival-speaking-card-generator/scripts/validate-survival-speaking-cards.sh
+zsh agent-skills/survival-speaking-card-generator/scripts/validate-survival-speaking-cards.sh
 ```
 
 The validator is read-only. It checks card placement, required fields, duplicate `jp_text`, body sections, audio references, scene-guide isolation, and the rollover dry-run.

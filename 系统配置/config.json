@@ -1,0 +1,14 @@
+{
+  "language_profile": {
+    "name": "Japanese",
+    "tag_namespace": "jp",
+    "listenkit_locale": "ja-JP",
+    "listenkit_language": "Japanese",
+    "pronunciation_system": "pitch_accent",
+    "speaking_text_field": "jp_text"
+  },
+  "features": {
+    "offline_dictionary": true,
+    "accent_audit": true
+  }
+}

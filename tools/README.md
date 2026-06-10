@@ -33,13 +33,13 @@
 常用命令：
 
 ```bash
-zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh --help
+zsh agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh --help
 ```
 
 實際調用鏈路：
 
 ```text
-jp-listening-script-generator
+listening-script-generator
   -> run-listening-transcribe.sh
   -> tools/listening-transcribe-official/transcribe_listening.py
   -> ../ListenKit/cli/generate-markdown.sh
@@ -48,7 +48,7 @@ jp-listening-script-generator
 
 依賴：
 
-- Skill wrapper：`codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh`
+- Skill wrapper：`agent-skills/listening-script-generator/scripts/run-listening-transcribe.sh`
 - 通用轉寫能力：`../ListenKit/cli/generate-markdown.sh`
 - 通用時間範圍切片能力：`../ListenKit/cli/export-audio-slices.py`
 - 離線詞典快取：由 `setup_offline_dictionary.py` 維護。

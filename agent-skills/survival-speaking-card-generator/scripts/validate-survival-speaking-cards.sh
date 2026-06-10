@@ -7,7 +7,7 @@ find_vault_root() {
   local current=""
   for current in "${PWD:A}" "${SCRIPT_DIR}"; do
     while [[ "${current}" != "/" ]]; do
-      if [[ -d "${current}/学习系统" && -d "${current}/codex-skills" ]]; then
+      if [[ -d "${current}/学习系统" && -d "${current}/agent-skills" ]]; then
         echo "${current}"
         return 0
       fi
@@ -35,12 +35,21 @@ from collections import defaultdict
 from pathlib import Path
 
 root = Path(sys.argv[1])
-config_path = root / "系统配置/paths.json"
-if not config_path.exists():
-    config_path = root / "学习系统/系统/配置/paths.json"  # legacy fallback
-if not config_path.exists():
-    config_path = root / "学习系统/系统配置/paths.json"  # legacy fallback
-roles = json.loads(config_path.read_text()).get("roles", {})
+
+# Load language config to get speaking_text_field
+config_path = root / "系统配置/config.json"
+if config_path.exists():
+    config = json.loads(config_path.read_text())
+    speaking_text_field = config.get("language_profile", {}).get("speaking_text_field", "jp_text")
+else:
+    speaking_text_field = "jp_text"  # backward compatible default
+
+paths_config_path = root / "系统配置/paths.json"
+if not paths_config_path.exists():
+    paths_config_path = root / "学习系统/系统/配置/paths.json"  # legacy fallback
+if not paths_config_path.exists():
+    paths_config_path = root / "学习系统/系统配置/paths.json"  # legacy fallback
+roles = json.loads(paths_config_path.read_text()).get("roles", {})
 card_root = root / roles.get("speaking_card_root", "学习系统/生活口语/句库")
 guide_root = root / roles.get("speaking_guide_root", "学习系统/生活口语/场景指南")
 required_fields = (
@@ -51,7 +60,7 @@ required_fields = (
     "scene",
     "speaker_role",
     "function",
-    "jp_text",
+    speaking_text_field,
     "meaning_zh",
     "reply_hint",
     "audio_ref",
@@ -73,7 +82,7 @@ nonempty_fields = (
     "scene",
     "speaker_role",
     "function",
-    "jp_text",
+    speaking_text_field,
     "meaning_zh",
     "reply_hint",
     "first_seen",
@@ -86,7 +95,7 @@ nonempty_fields = (
 snake_case = re.compile(r"^[a-z][a-z0-9_]*$")
 audio_embed = re.compile(r"!\[\[([^\]|#]+\.(?:m4a|mp3|wav|aac|flac|ogg))(?:\|[^\]]+)?\]\]", re.I)
 errors: list[str] = []
-jp_text_paths: dict[str, list[Path]] = defaultdict(list)
+speaking_text_paths: dict[str, list[Path]] = defaultdict(list)
 
 
 def fail(path: Path, message: str) -> None:
@@ -149,9 +158,9 @@ for path in cards:
     if "## 对方可能怎么说" not in text and "## 我怎么回" not in text:
         fail(path, "missing response body section")
 
-    jp_text = fields.get("jp_text", "")
-    if jp_text:
-        jp_text_paths[jp_text].append(path)
+    speaking_text = fields.get(speaking_text_field, "")
+    if speaking_text:
+        speaking_text_paths[speaking_text].append(path)
 
     audio_ref = fields.get("audio_ref", "")
     if audio_ref and resolve_audio(path, audio_ref) is None:
@@ -160,10 +169,10 @@ for path in cards:
         if resolve_audio(path, embed) is None:
             fail(path, f"audio embed does not resolve: {embed}")
 
-for jp_text, paths in sorted(jp_text_paths.items()):
+for speaking_text, paths in sorted(speaking_text_paths.items()):
     if len(paths) > 1:
         joined = ", ".join(str(path.relative_to(root)) for path in paths)
-        errors.append(f"duplicate jp_text {jp_text!r}: {joined}")
+        errors.append(f"duplicate {speaking_text_field} {speaking_text!r}: {joined}")
 
 if guide_root.exists():
     for path in sorted(guide_root.rglob("*.md")):
@@ -182,4 +191,4 @@ print("Scene-guide isolation: OK")
 PY
 
 cd "${ROOT}"
-zsh codex-skills/jp-next-day-review-updater/scripts/run-next-day-review-update.sh --date "${DATE}" --dry-run
+zsh agent-skills/next-day-review-updater/scripts/run-next-day-review-update.sh --date "${DATE}" --dry-run

@@ -7,7 +7,7 @@ find_vault_root() {
   local current=""
   for current in "${PWD:A}" "${SCRIPT_DIR}"; do
     while [[ "${current}" != "/" ]]; do
-      if [[ -d "${current}/学习系统" && -d "${current}/codex-skills" ]]; then
+      if [[ -d "${current}/学习系统" && -d "${current}/agent-skills" ]]; then
         echo "${current}"
         return 0
       fi

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 SKILL_DIR="${SCRIPT_DIR:h}"
-TARGET_DIR="${HOME}/.codex/skills/jp-next-day-review-updater"
+TARGET_DIR="${HOME}/.codex/skills/next-day-review-updater"
 
 mkdir -p "${TARGET_DIR}/agents" "${TARGET_DIR}/scripts"
 cp "${SKILL_DIR}/SKILL.md" "${TARGET_DIR}/SKILL.md"
@@ -17,4 +17,4 @@ chmod +x \
   "${TARGET_DIR}/scripts/update_next_day_review.py" \
   "${TARGET_DIR}/scripts/sync-to-global.sh"
 
-echo "Synced jp-next-day-review-updater to ${TARGET_DIR}"
+echo "Synced next-day-review-updater to ${TARGET_DIR}"

@@ -1,29 +1,29 @@
 ---
-name: jp-source-note-generator
-description: Use when turning a transcript, ListenKit artifact, audio, video, or URL into a flexible Japanese-learning source note in this Obsidian vault. Do not use for fixed 精听稿 listening notes or automatic review card maintenance.
+name: source-note-generator
+description: Use when turning a transcript, ListenKit artifact, audio, video, or URL into a flexible learning source note in this Obsidian vault. Do not use for fixed 精听稿 listening notes or automatic review card maintenance.
 ---
 
-# JP Source Note Generator
+# Source Note Generator
 
-Use this skill when the task is to turn a raw transcript, ListenKit Markdown transcript, video URL, audio URL, or local audio/video file into a Japanese-learning note in this Obsidian vault, and the intended output is a flexible study note rather than the fixed 精听稿 format.
+Use this skill when the task is to turn a raw transcript, ListenKit Markdown transcript, video URL, audio URL, or local audio/video file into a learning note in this Obsidian vault, and the intended output is a flexible study note rather than the fixed 精听稿 format.
 
-For ordinary listening practice notes under the existing 精听稿 contract, use `jp-listening-script-generator`.
+For ordinary listening practice notes under the existing 精听稿 contract, use `listening-script-generator`.
 
-Do not use this skill for automatic vocabulary, grammar, pronunciation, or error-card maintenance; use `jp-review-material-maintainer` when the requested output is review material. Use `jp-survival-speaking-card-generator` when the requested output is daily-life speaking cards.
+Do not use this skill for automatic vocabulary, grammar, pronunciation, or error-card maintenance; use `review-material-maintainer` when the requested output is review material. Use `survival-speaking-card-generator` when the requested output is daily-life speaking cards.
 
 ## Maintenance Source Of Truth
 
 The project copy is the source of truth:
 
-- source: `codex-skills/jp-source-note-generator/`
-- installed copy: `~/.codex/skills/jp-source-note-generator/`
+- source: `agent-skills/source-note-generator/`
+- installed copy: `~/.codex/skills/source-note-generator/`
 
 Edit the project copy first, then sync it to the global skill directory.
 
 Default sync command:
 
 ```bash
-zsh codex-skills/jp-source-note-generator/scripts/sync-to-global.sh
+zsh agent-skills/source-note-generator/scripts/sync-to-global.sh
 ```
 
 ## Core Contract
@@ -36,7 +36,7 @@ This skill fixes the workflow and provenance requirements, not the note structur
 - before writing the final note, read enough material to propose the likely note direction and confirm the user's choices
 - default to one learning note; create multiple notes only when the user chooses that split
 - default to a learning note, not review cards
-- if the user asks to create review cards, hand off to the matching workflow: use `jp-survival-speaking-card-generator` for daily-life speaking cards and `jp-review-material-maintainer` for vocabulary, grammar, pronunciation, error cards, and vocabulary deduplication
+- if the user asks to create review cards, hand off to the matching workflow: use `survival-speaking-card-generator` for daily-life speaking cards and `review-material-maintainer` for vocabulary, grammar, pronunciation, error cards, and vocabulary deduplication
 
 Every generated note must embed source provenance, regardless of the final structure:
 
@@ -52,7 +52,7 @@ The main body structure is flexible, but transcript placement is not: if transcr
 For URL, temporary audio, or local audio/video input, first prepare a stable source-note artifact bundle with the bundled wrapper:
 
 ```bash
-zsh codex-skills/jp-source-note-generator/scripts/prepare-source-note-material.sh \
+zsh agent-skills/source-note-generator/scripts/prepare-source-note-material.sh \
   --url "<url>" \
   --artifact-dir "<vault-artifact-dir>" \
   --stem "<short-source-name>"
@@ -61,7 +61,7 @@ zsh codex-skills/jp-source-note-generator/scripts/prepare-source-note-material.s
 For local audio or video:
 
 ```bash
-zsh codex-skills/jp-source-note-generator/scripts/prepare-source-note-material.sh \
+zsh agent-skills/source-note-generator/scripts/prepare-source-note-material.sh \
   --input "<source-media-path>" \
   --artifact-dir "<vault-artifact-dir>" \
   --stem "<short-source-name>"
@@ -83,7 +83,7 @@ The JSON artifact is for structured follow-up such as timing, segment-level chec
 When the input is already a ListenKit Markdown transcript, summarize it with:
 
 ```bash
-zsh codex-skills/jp-source-note-generator/scripts/prepare-source-note-material.sh \
+zsh agent-skills/source-note-generator/scripts/prepare-source-note-material.sh \
   --listenkit-md "<transcript.md>" \
   --final-audio "<vault-audio-path>"
 ```
@@ -156,7 +156,7 @@ Keep the final note useful for study, not just a summary. Prefer clear rules, re
 
 ## Boundaries
 
-- This skill does not replace `jp-listening-script-generator`.
+- This skill does not replace `listening-script-generator`.
 - This skill does not automatically create vocabulary, grammar, speaking, pronunciation, or error cards.
 - This skill does not force frontmatter unless the user chooses an existing review-system template.
 - This skill does not force a fixed body layout, but transcript text belongs in a note appendix when it exists.
