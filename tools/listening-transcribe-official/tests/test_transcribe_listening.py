@@ -30,10 +30,11 @@ REQUIREMENTS_PATH = Path(__file__).resolve().parents[1] / "requirements-listenin
 
 
 class TranscribeListeningTests(unittest.TestCase):
-    def test_wrapper_defaults_to_repo_virtualenv(self) -> None:
+    def test_wrapper_defaults_to_local_cache_virtualenv(self) -> None:
         wrapper = WRAPPER_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('${ROOT}/.venv/bin/python', wrapper)
+        self.assertIn('${HOME}/Library/Caches/LingoTrace/venvs/cpython-314/bin/python', wrapper)
+        self.assertNotIn('${ROOT}/.venv', wrapper)
         self.assertNotIn('/opt/homebrew/bin/python3.14', wrapper)
 
     def test_wrapper_supports_explicit_runtime_override_without_fallback(self) -> None:
@@ -58,8 +59,8 @@ class TranscribeListeningTests(unittest.TestCase):
 
         self.assertIn('python3.14', init_script)
         self.assertIn('requirements-listening.txt', init_script)
-        self.assertIn('${ROOT}/.venv', init_script)
         self.assertIn('Library/Caches/LingoTrace/venvs/cpython-314', init_script)
+        self.assertNotIn('ln -s', init_script)
         self.assertIn('${LISTENKIT_ROOT}/cli/check-runtime.sh', check_script)
         self.assertIn('ffmpeg', check_script)
         self.assertIn('ffprobe', check_script)

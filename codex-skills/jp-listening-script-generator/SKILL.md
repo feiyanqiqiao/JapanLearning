@@ -97,7 +97,7 @@ Set `FASTER_WHISPER_PYTHON=/path/to/python` only when intentionally overriding L
 
 For faster-whisper on Apple Silicon, use Homebrew Python 3.14. Initialize ListenKit with `LISTENKIT_FASTER_WHISPER_BOOTSTRAP_PYTHON=/opt/homebrew/bin/python3.14`; faster-whisper import checks have a 60-second limit and fail clearly instead of waiting indefinitely.
 
-LingoTrace uses its own `.venv/bin/python`; because the vault is under iCloud, this path is a symlink to the physical runtime at `~/Library/Caches/LingoTrace/venvs/cpython-314`. Native extensions must not live directly under the iCloud path. ListenKit uses `../ListenKit/.venv/bin/python`. Homebrew Python 3.14 is only the bootstrap for creating those environments. Set `LINGOTRACE_LISTENING_PYTHON=/path/to/python` only for an intentional LingoTrace override. `JP_LISTENING_PYTHON` remains a legacy compatibility override.
+LingoTrace uses `~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python` directly. Native extensions and runtime symlinks must not live inside the iCloud-backed Vault. ListenKit uses `../ListenKit/.venv/bin/python`. Homebrew Python 3.14 is only the bootstrap for creating those environments. Set `LINGOTRACE_LISTENING_PYTHON=/path/to/python` only for an intentional LingoTrace override. `JP_LISTENING_PYTHON` remains a legacy compatibility override.
 
 The current local test setup uses:
 
@@ -123,7 +123,7 @@ Initialize the LingoTrace environment explicitly:
 codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh
 ```
 
-The listening note renderer loads `fugashi==1.5.2` and `unidic-lite==1.0.8` only from LingoTrace `.venv`. The external cache is reserved for static accent data:
+The listening note renderer loads `fugashi==1.5.2` and `unidic-lite==1.0.8` only from the LingoTrace runtime under `~/Library/Caches/LingoTrace/venvs/cpython-314`. The separate dictionary-data cache is reserved for static accent data:
 
 - default: `~/Library/Caches/jp-listening-dicts`
 - cross-version static data: `~/Library/Caches/jp-listening-dicts/accent_map.json`
@@ -132,7 +132,7 @@ The listening note renderer loads `fugashi==1.5.2` and `unidic-lite==1.0.8` only
 Check the project runtime before first use:
 
 ```bash
-.venv/bin/python tools/listening-transcribe-official/setup_offline_dictionary.py --python .venv/bin/python --check
+~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python tools/listening-transcribe-official/setup_offline_dictionary.py --python ~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python --check
 ```
 
 The check output should include both sample tokens and sample accent candidates such as `公園⓪`; tokenization alone is not enough to prove accent lookup is wired into the generator.
@@ -143,7 +143,7 @@ Run the complete read-only LingoTrace / ListenKit check with:
 codex-skills/jp-listening-script-generator/scripts/check-listening-chain.sh
 ```
 
-The initializer writes Python packages only into LingoTrace `.venv`. The generator must fail clearly when the runtime is missing, uses the wrong Python version, cannot load its C extension, or returns no accent candidates. Do not silently generate guessed accent data or add cache paths to `sys.path`.
+The initializer writes Python packages only into the dedicated LingoTrace runtime. The generator must fail clearly when the runtime is missing, uses the wrong Python version, cannot load its C extension, or returns no accent candidates. Do not silently generate guessed accent data or add package directories to `sys.path`.
 
 For URL input, choose the target listening directory explicitly:
 

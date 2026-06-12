@@ -19,7 +19,7 @@ if [[ -z "${ROOT}" ]]; then
   exit 1
 fi
 
-LINGOTRACE_PYTHON="${LINGOTRACE_LISTENING_PYTHON:-${ROOT}/.venv/bin/python}"
+LINGOTRACE_PYTHON="${LINGOTRACE_LISTENING_PYTHON:-${HOME}/Library/Caches/LingoTrace/venvs/cpython-314/bin/python}"
 LISTENKIT_ROOT="${LISTENKIT_ROOT:-${ROOT:h}/ListenKit}"
 LISTENKIT_PYTHON="${LISTENKIT_PYTHON:-${FASTER_WHISPER_PYTHON:-${LISTENKIT_ROOT}/.venv/bin/python}}"
 

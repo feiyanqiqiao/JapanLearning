@@ -51,8 +51,8 @@ jp-listening-script-generator
 - Skill wrapper：`codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh`
 - 通用轉寫能力：`../ListenKit/cli/generate-markdown.sh`
 - 通用時間範圍切片能力：`../ListenKit/cli/export-audio-slices.py`
-- 離線詞典套件：由 `setup_offline_dictionary.py` 安裝及檢查於 LingoTrace 自己的 `.venv`。
-- Python runtime：正常執行固定使用 `LingoTrace/.venv/bin/python`；此入口連到 `~/Library/Caches/LingoTrace/venvs/cpython-314`，避免從 iCloud 路徑載入原生擴展時卡住。Homebrew `/opt/homebrew/bin/python3.14` 只負責初始化。ListenKit 使用獨立的 `ListenKit/.venv`，兩者不得跨環境 import 套件。
+- 離線詞典套件：由 `setup_offline_dictionary.py` 安裝及檢查於 LingoTrace 自己的本機 Cache runtime。
+- Python runtime：正常執行固定使用 `~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python`，避免從 iCloud 路徑載入原生擴展時卡住或讓 symlink 被改名。Homebrew `/opt/homebrew/bin/python3.14` 只負責初始化。ListenKit 使用獨立的 `ListenKit/.venv`，兩者不得跨環境 import 套件。
 
 #### 精聽學習語塊
 
@@ -84,33 +84,33 @@ jp-listening-script-generator
 用途：
 
 - 檢查 LingoTrace Python 3.14 環境與離線日語詞典是否可用。
-- 安裝固定版本的 `fugashi` 與 `unidic-lite` 到 LingoTrace `.venv`。
+- 安裝固定版本的 `fugashi` 與 `unidic-lite` 到 LingoTrace 本機 Cache runtime。
 - 為聽力筆記與詞彙維護提供重音候選。
 
 何時使用：
 
 - 首次使用聽力轉寫工具前。
-- 聽力工具提示 LingoTrace `.venv` 缺失或損壞時。
+- 聽力工具提示 LingoTrace runtime 缺失或損壞時。
 - 需要確認分詞與重音候選是否正常時。
 
 何時不要使用：
 
 - 不要用它生成聽力筆記。
-- 不要把 `.venv` 或外部靜態詞典快取提交到 Git。
+- 不要把 runtime 或外部靜態詞典快取提交到 Git。
 - 不要把本地候選直接當作人工確認結果。
 
 常用命令：
 
 ```bash
 codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh
-.venv/bin/python tools/listening-transcribe-official/setup_offline_dictionary.py --python .venv/bin/python --check
+~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python tools/listening-transcribe-official/setup_offline_dictionary.py --python ~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python --check
 codex-skills/jp-listening-script-generator/scripts/check-listening-chain.sh
 ```
 
 依賴：
 
 - Homebrew Python 3.14 作為初始化器。
-- LingoTrace 透過 `.venv` 入口使用本機 Cache 中的 Python 套件；直接依賴只由 `requirements-listening.txt` 固定。
+- LingoTrace 直接使用本機 Cache 中的 Python 套件；直接依賴只由 `requirements-listening.txt` 固定。
 - Vault 外部快取目錄：預設為 `~/Library/Caches/jp-listening-dicts`，只保留跨版本靜態資料，例如根目錄 `accent_map.json`。
 - 可用 `JP_LISTENING_DICT_DIR` 覆蓋預設位置。
 
@@ -121,7 +121,7 @@ codex-skills/jp-listening-script-generator/scripts/check-listening-chain.sh
 執行測試：
 
 ```bash
-.venv/bin/python -m unittest discover -s tools/listening-transcribe-official/tests -p 'test_*.py'
+~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python -m unittest discover -s tools/listening-transcribe-official/tests -p 'test_*.py'
 ```
 
 ## Git Workflow Checks

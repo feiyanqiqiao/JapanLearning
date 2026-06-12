@@ -1,0 +1,8 @@
+# Diagnostic snapshot only. Do not use this file as an installation source.
+captured_at=2026-06-13 Asia/Tokyo
+python_version=3.14.3
+abi_tag=cpython-314
+runtime_prefix=~/Library/Caches/LingoTrace/venvs/cpython-314
+
+fugashi==1.5.2
+unidic-lite==1.0.8

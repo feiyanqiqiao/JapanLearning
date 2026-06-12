@@ -22,7 +22,7 @@ if [[ -z "${ROOT}" ]]; then
   exit 1
 fi
 
-PYTHON_BIN="${LINGOTRACE_LISTENING_PYTHON:-${JP_LISTENING_PYTHON:-${ROOT}/.venv/bin/python}}"
+PYTHON_BIN="${LINGOTRACE_LISTENING_PYTHON:-${JP_LISTENING_PYTHON:-${HOME}/Library/Caches/LingoTrace/venvs/cpython-314/bin/python}}"
 INIT_SCRIPT="${ROOT}/codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh"
 SETUP_SCRIPT="${ROOT}/tools/listening-transcribe-official/setup_offline_dictionary.py"
 
