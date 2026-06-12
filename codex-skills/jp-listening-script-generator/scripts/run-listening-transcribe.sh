@@ -24,11 +24,12 @@ fi
 
 PYTHON_BIN="${JP_LISTENING_PYTHON:-}"
 if [[ -z "${PYTHON_BIN}" ]]; then
-  if [[ -x "/opt/homebrew/bin/python3" ]]; then
-    PYTHON_BIN="/opt/homebrew/bin/python3"
-  else
-    PYTHON_BIN="$(command -v python3)"
-  fi
+  PYTHON_BIN="/opt/homebrew/bin/python3.14"
+fi
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "Listening transcription requires Python 3.14 at ${PYTHON_BIN}. Set JP_LISTENING_PYTHON only for an intentional override." >&2
+  exit 1
 fi
 
 "${PYTHON_BIN}" "${ROOT}/tools/listening-transcribe-official/transcribe_listening.py" "$@"

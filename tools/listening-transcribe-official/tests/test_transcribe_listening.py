@@ -1,4 +1,5 @@
 import importlib.util
+import importlib.machinery
 import json
 import os
 import subprocess
@@ -18,10 +19,21 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 SETUP_MODULE_PATH = Path(__file__).resolve().parents[1] / "setup_offline_dictionary.py"
+SETUP_SPEC = importlib.util.spec_from_file_location("setup_offline_dictionary", SETUP_MODULE_PATH)
+SETUP_MODULE = importlib.util.module_from_spec(SETUP_SPEC)
+assert SETUP_SPEC.loader is not None
+sys.modules[SETUP_SPEC.name] = SETUP_MODULE
+SETUP_SPEC.loader.exec_module(SETUP_MODULE)
 WRAPPER_PATH = Path(__file__).resolve().parents[3] / "codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh"
 
 
 class TranscribeListeningTests(unittest.TestCase):
+    def test_wrapper_defaults_to_homebrew_python314(self) -> None:
+        wrapper = WRAPPER_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('/opt/homebrew/bin/python3.14', wrapper)
+        self.assertNotIn('/opt/homebrew/bin/python3.12', wrapper)
+
     def test_wrapper_uses_jp_listening_python_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -92,7 +104,7 @@ class TranscribeListeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             audio_path = root / "manabo_cz20.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             note_path = root / "manabo_cz20_1日の摂取カロリー.md"
             note_path.write_text(
                 "\n".join(
@@ -157,7 +169,7 @@ class TranscribeListeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             audio_path = root / "manabo_cz99.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             payload = {
                 "full_text": "これは新しい素材です。",
                 "segments": [
@@ -227,6 +239,15 @@ class TranscribeListeningTests(unittest.TestCase):
             )
 
         self.assertIn("公園⓪を散歩します。", package)
+
+    def test_offline_dictionary_uses_runtime_abi_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dictionary = MODULE.OfflineAccentDictionary(Path(tmpdir))
+
+            self.assertEqual(
+                dictionary.python_target,
+                Path(tmpdir) / "python" / sys.implementation.cache_tag,
+            )
 
     def test_learning_package_marks_unknown_focus_terms_as_pending_confirmation(self) -> None:
         package = MODULE.build_learning_package(
@@ -403,29 +424,148 @@ class TranscribeListeningTests(unittest.TestCase):
         self.assertEqual(blocks[0].end, blocks[1].start)
         self.assertEqual(blocks[1].end, 3.0)
 
-    def test_shadowing_learning_blocks_group_dialogue_without_number_announcements(self) -> None:
-        blocks = MODULE.shadowing_learning_blocks(
+    def test_numbered_dialogue_profile_is_detected_without_shadowing_path(self) -> None:
+        payload = {
+            "engine": "faster-whisper",
+            "full_text": "",
+            "segments": [
+                {"start": 0.0, "end": 0.8, "text": "1"},
+                {"start": 0.8, "end": 2.0, "text": "お名前は？"},
+                {"start": 2.0, "end": 3.0, "text": "ペドロです。"},
+                {"start": 3.5, "end": 4.2, "text": "2"},
+                {"start": 4.2, "end": 5.5, "text": "お国は？"},
+                {"start": 5.5, "end": 6.5, "text": "スペインです。"},
+            ],
+        }
+
+        candidate = MODULE.candidate_from_payload(Path("neutral/lesson.mp3"), payload, "faster-whisper")
+
+        self.assertEqual(candidate.slice_profile.kind, "dialogue")
+        self.assertEqual(candidate.slice_profile.grouping, "numbered")
+        self.assertEqual(candidate.slice_profile.number_markers, "included")
+        self.assertEqual(candidate.slice_profile.padding_seconds, 0.0)
+
+    def test_numbered_dialogue_accepts_observation_response_and_long_answer(self) -> None:
+        chunks = [
+            MODULE.Chunk(start=0.0, end=0.5, text="1"),
+            MODULE.Chunk(start=0.5, end=2.0, text="あ、見て。昨日の台風で木が倒れてる。"),
+            MODULE.Chunk(start=2.0, end=3.5, text="本当だ。すごい風だったんだね。"),
+            MODULE.Chunk(start=4.0, end=4.5, text="2"),
+            MODULE.Chunk(start=4.5, end=5.5, text="リンさん、宿題は？"),
+            MODULE.Chunk(start=5.5, end=8.5, text="すいません。今、母が来ているので、来週出してもいいですか？"),
+        ]
+
+        profile = MODULE.detect_slice_profile(chunks)
+        blocks = MODULE.numbered_dialogue_learning_blocks(chunks)
+
+        self.assertEqual(profile.grouping, "numbered")
+        self.assertIsNotNone(blocks)
+        assert blocks is not None
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("A：あ、見て。昨日の台風で木が倒れてる。", blocks[0].text)
+        self.assertIn("B：すいません。今、母が来ているので、来週出してもいいですか？", blocks[1].text)
+
+    def test_shadowing_path_monologue_uses_sentence_profile(self) -> None:
+        payload = {
+            "engine": "faster-whisper",
+            "full_text": "今日は良い天気です。公園を散歩します。",
+            "segments": [
+                {"start": 0.0, "end": 2.0, "text": "今日は良い天気です。"},
+                {"start": 2.0, "end": 4.0, "text": "公園を散歩します。"},
+            ],
+        }
+
+        candidate = MODULE.candidate_from_payload(Path("Shadowing_初中級/lesson.mp3"), payload, "faster-whisper")
+
+        self.assertEqual(candidate.slice_profile.kind, "sentence")
+        self.assertEqual(candidate.slice_profile.grouping, "sentence")
+        self.assertEqual(candidate.slice_profile.padding_seconds, 0.5)
+
+    def test_unnumbered_dialogue_groups_continuous_four_turn_exchange(self) -> None:
+        chunks = [
+            MODULE.Chunk(start=0.0, end=1.0, text="お名前は？"),
+            MODULE.Chunk(start=1.0, end=2.0, text="ペドロです。"),
+            MODULE.Chunk(start=2.5, end=3.5, text="お国は？"),
+            MODULE.Chunk(start=3.5, end=4.5, text="スペインです。"),
+        ]
+
+        profile = MODULE.detect_slice_profile(chunks)
+        blocks = MODULE.dialogue_exchange_learning_blocks(chunks)
+
+        self.assertEqual(profile.kind, "dialogue")
+        self.assertEqual(profile.grouping, "exchange")
+        self.assertIsNotNone(blocks)
+        assert blocks is not None
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(
+            blocks[0].text,
+            "A：お名前は？\nB：ペドロです。\nA：お国は？\nB：スペインです。",
+        )
+
+    def test_unnumbered_dialogue_groups_two_turn_exchange(self) -> None:
+        chunks = [
+            MODULE.Chunk(start=0.0, end=1.0, text="駅までどのくらいですか？"),
+            MODULE.Chunk(start=1.0, end=2.0, text="歩いて5分ぐらいです。"),
+        ]
+
+        profile = MODULE.detect_slice_profile(chunks)
+        blocks = MODULE.dialogue_exchange_learning_blocks(chunks)
+
+        self.assertEqual(profile.grouping, "exchange")
+        self.assertIsNotNone(blocks)
+        assert blocks is not None
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].start, 0.0)
+        self.assertEqual(blocks[0].end, 2.0)
+
+    def test_numbered_list_without_dialogue_falls_back_to_sentence(self) -> None:
+        profile = MODULE.detect_slice_profile(
+            [
+                MODULE.Chunk(start=0.0, end=0.5, text="1"),
+                MODULE.Chunk(start=0.5, end=1.5, text="東京"),
+                MODULE.Chunk(start=1.5, end=2.0, text="2"),
+                MODULE.Chunk(start=2.0, end=3.0, text="大阪"),
+            ]
+        )
+
+        self.assertEqual(profile.kind, "sentence")
+        self.assertEqual(profile.grouping, "sentence")
+
+    def test_mixed_dialogue_and_monologue_falls_back_to_sentence(self) -> None:
+        profile = MODULE.detect_slice_profile(
+            [
+                MODULE.Chunk(start=0.0, end=1.0, text="駅までどのくらいですか？"),
+                MODULE.Chunk(start=1.0, end=2.0, text="歩いて5分ぐらいです。"),
+                MODULE.Chunk(start=2.0, end=4.0, text="そのあと、公園をゆっくり散歩しました。"),
+            ]
+        )
+
+        self.assertEqual(profile.grouping, "sentence")
+
+    def test_numbered_dialogue_learning_blocks_include_own_number_announcement(self) -> None:
+        blocks = MODULE.numbered_dialogue_learning_blocks(
             [
                 MODULE.Chunk(start=0.0, end=1.0, text="セクション10"),
                 MODULE.Chunk(start=1.0, end=2.0, text="1"),
-                MODULE.Chunk(start=2.0, end=4.0, text="最近、冷えますね。"),
-                MODULE.Chunk(start=4.0, end=6.0, text="本当に寒くなりましたね。"),
+                MODULE.Chunk(start=2.0, end=4.0, text="最近、冷えますか？"),
+                MODULE.Chunk(start=4.0, end=6.0, text="はい、本当に寒くなりました。"),
                 MODULE.Chunk(start=6.0, end=7.0, text="２"),
                 MODULE.Chunk(start=7.0, end=9.0, text="新しい仕事には、もう慣れた？"),
+                MODULE.Chunk(start=9.0, end=11.0, text="はい、もう慣れました。"),
             ]
         )
 
         self.assertIsNotNone(blocks)
         assert blocks is not None
         self.assertEqual([block.id for block in blocks], ["S01", "S02"])
-        self.assertEqual(blocks[0].start, 2.0)
+        self.assertEqual(blocks[0].start, 1.0)
         self.assertEqual(blocks[0].end, 6.0)
-        self.assertEqual(blocks[0].text, "最近、冷えますね。\n本当に寒くなりましたね。")
+        self.assertEqual(blocks[0].text, "1\nA：最近、冷えますか？\nB：はい、本当に寒くなりました。")
         self.assertEqual(blocks[0].kind, "numbered-dialogue")
-        self.assertEqual(blocks[1].start, 7.0)
+        self.assertEqual(blocks[1].start, 6.0)
 
-    def test_shadowing_learning_blocks_reject_missing_group_number(self) -> None:
-        blocks = MODULE.shadowing_learning_blocks(
+    def test_numbered_dialogue_learning_blocks_reject_missing_group_number(self) -> None:
+        blocks = MODULE.numbered_dialogue_learning_blocks(
             [
                 MODULE.Chunk(start=0.0, end=1.0, text="セクション10"),
                 MODULE.Chunk(start=1.0, end=2.0, text="1"),
@@ -473,6 +613,127 @@ class TranscribeListeningTests(unittest.TestCase):
             ],
         )
 
+    def test_slice_profile_cli_override_precedes_manifest_profile(self) -> None:
+        detected = MODULE.SliceProfile("dialogue", "numbered", "auto", "included", 0.0)
+        manifest = MODULE.SliceProfile("dialogue", "numbered", "manifest", "included", 0.0)
+
+        resolved = MODULE.resolve_slice_profile("sentence", manifest, detected, [])
+
+        self.assertEqual(resolved.kind, "sentence")
+        self.assertEqual(resolved.grouping, "sentence")
+        self.assertEqual(resolved.source, "cli")
+        self.assertEqual(resolved.padding_seconds, 0.5)
+
+    def test_slice_profile_manifest_precedes_auto_detection(self) -> None:
+        detected = MODULE.SliceProfile("sentence", "sentence", "auto", "none", 0.5)
+        manifest = MODULE.SliceProfile("dialogue", "numbered", "manifest", "included", 0.0)
+
+        resolved = MODULE.resolve_slice_profile("auto", manifest, detected, [])
+
+        self.assertEqual(resolved, manifest)
+
+    def test_forced_dialogue_requires_reliable_blocks_or_manifest_profile(self) -> None:
+        detected = MODULE.SliceProfile("sentence", "sentence", "auto", "none", 0.5)
+        chunks = [MODULE.Chunk(start=0.0, end=2.0, text="今日は良い天気です。")]
+
+        with self.assertRaisesRegex(RuntimeError, "reviewed --slice-manifest"):
+            MODULE.resolve_slice_profile("dialogue", None, detected, chunks)
+
+    def test_manifest_profile_is_optional_and_persisted_without_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sample.slices.json"
+            profile = MODULE.SliceProfile("dialogue", "exchange", "auto", "none", 0.5)
+            blocks = [
+                MODULE.LearningBlock(
+                    id="S01",
+                    text="A：駅までどのくらいですか？\nB：歩いて5分ぐらいです。",
+                    start=1.0,
+                    end=4.0,
+                    kind="dialogue-exchange",
+                )
+            ]
+
+            MODULE.write_slice_manifest(path, blocks, profile)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            loaded = MODULE.load_manifest_slice_profile(path)
+
+        self.assertEqual(payload["version"], 1)
+        self.assertEqual(payload["slice_profile"]["grouping"], "exchange")
+        self.assertEqual(loaded, MODULE.SliceProfile("dialogue", "exchange", "manifest", "none", 0.5))
+
+    def test_legacy_manifest_without_profile_remains_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "legacy.slices.json"
+            path.write_text(
+                json.dumps({"version": 1, "slices": [{"id": "S01", "start": 1.0, "end": 2.0}]}),
+                encoding="utf-8",
+            )
+
+            profile = MODULE.load_manifest_slice_profile(path)
+
+        self.assertIsNone(profile)
+
+    def test_default_manifest_is_reused_only_when_marked_reviewed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sample.slices.json"
+            profile = MODULE.SliceProfile("dialogue", "numbered", "auto", "included", 0.0)
+            blocks = [
+                MODULE.LearningBlock(id="S01", text="1\nA：お名前は？\nB：ペドロです。", start=1.0, end=3.0, kind="manual")
+            ]
+            MODULE.write_slice_manifest(path, blocks, profile)
+
+            automatic = MODULE.load_manifest_slice_profile(path, reviewed_only=True)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["slice_profile"]["source"] = "manifest"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            reviewed = MODULE.load_manifest_slice_profile(path, reviewed_only=True)
+
+        self.assertIsNone(automatic)
+        self.assertEqual(reviewed, MODULE.SliceProfile("dialogue", "numbered", "manifest", "included", 0.0))
+
+    def test_parse_args_accepts_slice_profile_override(self) -> None:
+        with mock.patch.object(sys, "argv", ["transcribe-listening", "audio.mp3", "--slice-profile", "dialogue"]):
+            args = MODULE.parse_args()
+
+        self.assertEqual(args.slice_profile, "dialogue")
+
+    def test_review_sidecar_records_resolved_slice_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audio_path = root / "attach" / "lesson.mp3"
+            audio_path.parent.mkdir(parents=True)
+            audio_path.write_bytes(b"audio")
+            note_path = root / "lesson.md"
+            manifest_path = root / "artifacts" / "lesson.slices.json"
+            report_path = root / "artifacts" / "lesson.slice-export.json"
+            profile = MODULE.SliceProfile("dialogue", "exchange", "cli", "none", 0.5)
+            export_result = MODULE.SliceExportResult([], report_path, {"version": 1, "slices": []})
+            blocks = [
+                MODULE.LearningBlock(
+                    id="S01",
+                    text="A：駅までどのくらいですか？\nB：歩いて5分ぐらいです。",
+                    start=1.0,
+                    end=3.0,
+                    kind="dialogue-exchange",
+                )
+            ]
+
+            review_path = MODULE.write_intensive_review_sidecar(
+                audio_path,
+                note_path,
+                "faster-whisper",
+                manifest_path,
+                export_result,
+                blocks,
+                profile,
+            )
+            review = review_path.read_text(encoding="utf-8")
+
+        self.assertIn("- slice_profile_kind: dialogue", review)
+        self.assertIn("- slice_profile_grouping: exchange", review)
+        self.assertIn("- slice_profile_source: cli", review)
+        self.assertIn("- slice_padding_seconds: 0.5", review)
+
     def test_export_learning_block_slices_invokes_listenkit_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -498,19 +759,69 @@ class TranscribeListeningTests(unittest.TestCase):
             }
 
             with mock.patch.object(MODULE, "listenkit_export_audio_slices_script_path", return_value=Path("/tmp/export.py")):
-                with mock.patch.object(
-                    MODULE.subprocess,
-                    "run",
-                    return_value=mock.Mock(returncode=0, stdout=json.dumps(report), stderr=""),
-                ) as run_mock:
-                    refs = MODULE.export_learning_block_slices(audio_path, blocks, manifest_path)
+                with mock.patch.object(MODULE, "preflight_intensive_slice_tooling"):
+                    with mock.patch.object(
+                        MODULE.subprocess,
+                        "run",
+                        return_value=mock.Mock(returncode=0, stdout=json.dumps(report), stderr=""),
+                    ) as run_mock:
+                        profile = MODULE.SliceProfile("sentence", "sentence", "auto", "none", 0.5)
+                        export_result = MODULE.export_learning_block_slices(audio_path, blocks, manifest_path, profile)
+                        report_exists = export_result.report_path.exists()
 
-        self.assertEqual(refs, ["attach/20_S01.m4a"])
+        self.assertEqual(export_result.refs, ["attach/20_S01.m4a"])
+        self.assertEqual(export_result.report_path, root / "artifacts" / "20.slice-export.json")
+        self.assertTrue(report_exists)
+        self.assertEqual(export_result.report["slice_profile"]["grouping"], "sentence")
         command = run_mock.call_args.args[0]
         self.assertIn("/tmp/export.py", command)
         self.assertIn("--manifest", command)
         self.assertIn(str(manifest_path), command)
+        self.assertIn("--padding-seconds", command)
+        self.assertIn("0.5", command)
+        self.assertNotIn("--allow-overlap", command)
         self.assertIn("--overwrite", command)
+
+    def test_numbered_dialogue_export_uses_exact_boundaries_without_path_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audio_path = root / "neutral" / "Unit3" / "attach" / "21.mp3"
+            audio_path.parent.mkdir(parents=True)
+            audio_path.write_bytes(b"audio")
+            manifest_path = audio_path.parent.parent / "artifacts" / "21.slices.json"
+            manifest_path.parent.mkdir()
+            blocks = [
+                MODULE.LearningBlock(id="S09", text="すいません、待ちましたか？", start=91.14, end=100.62, kind="manual")
+            ]
+            report = {
+                "version": 1,
+                "source": str(audio_path),
+                "slices": [
+                    {
+                        "id": "S09",
+                        "start": 91.14,
+                        "end": 100.62,
+                        "path": str(audio_path.parent / "21_S09.m4a"),
+                        "status": "exported",
+                    }
+                ],
+            }
+
+            with mock.patch.object(MODULE, "listenkit_export_audio_slices_script_path", return_value=Path("/tmp/export.py")):
+                with mock.patch.object(MODULE, "preflight_intensive_slice_tooling"):
+                    with mock.patch.object(
+                        MODULE.subprocess,
+                        "run",
+                        return_value=mock.Mock(returncode=0, stdout=json.dumps(report), stderr=""),
+                    ) as run_mock:
+                        profile = MODULE.SliceProfile("dialogue", "numbered", "auto", "included", 0.0)
+                        result = MODULE.export_learning_block_slices(audio_path, blocks, manifest_path, profile)
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("--padding-seconds", command)
+        self.assertIn("0.0", command)
+        self.assertNotIn("--allow-overlap", command)
+        self.assertEqual(result.report["slice_profile"]["grouping"], "numbered")
 
     def test_validate_intensive_slice_output_requires_real_nonempty_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -577,7 +888,7 @@ class TranscribeListeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             audio_path = root / "manabo_cz21.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             note_path = root / "manabo_cz21_恵方巻きとうなぎとお菓子.md"
             note_path.write_text(
                 "\n".join(
@@ -627,7 +938,7 @@ class TranscribeListeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             audio_path = root / "manabo_cz20.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             placeholder_path = root / "manabo_cz20_识别稿.md"
             target_path = root / "manabo_cz20_1日の摂取カロリー.md"
             placeholder_path.write_text(
@@ -710,7 +1021,7 @@ class TranscribeListeningTests(unittest.TestCase):
         rendered, dialogue_mode = MODULE.render_dialogue_script_section(
             ["今日は良い天気ですね。", "朝から公園を散歩して、とても静かなたたずまいを楽しみました。"],
             chunks,
-            False,
+            MODULE.SliceProfile("sentence", "sentence", "auto", "none", 0.5),
         )
         self.assertFalse(dialogue_mode)
         self.assertNotIn("A：", rendered)
@@ -728,7 +1039,7 @@ class TranscribeListeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             audio_path = root / "audio.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             stderr = StringIO()
             with mock.patch.dict(os.environ, {"JP_LISTENING_DICT_DIR": str(root / "missing-dict")}, clear=False):
                 with mock.patch.object(sys, "argv", ["transcribe-listening", str(audio_path), "--dry-run"]):
@@ -738,26 +1049,27 @@ class TranscribeListeningTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("Offline dictionary is not ready", stderr.getvalue())
 
-    def test_auto_engine_uses_listenkit_default_for_shadowing(self) -> None:
+    def test_auto_engine_uses_listenkit_default_for_numbered_dialogue(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             audio_dir = root / "Shadowing_初中級" / "Unit1"
             audio_dir.mkdir(parents=True)
             audio_path = audio_dir / "04.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             payload = {
                 "engine": "faster-whisper",
                 "full_text": "",
                 "segments": [
                     {"start": 0.0, "end": 3.0, "text": "セクション4"},
                     {"start": 3.0, "end": 5.0, "text": "1"},
-                    {"start": 5.0, "end": 8.0, "text": "はじめまして、わたなべです。"},
-                    {"start": 8.0, "end": 14.0, "text": "たなかです。どうぞよろしく。"},
+                    {"start": 5.0, "end": 8.0, "text": "はじめまして、渡辺です。"},
+                    {"start": 8.0, "end": 14.0, "text": "田中です。どうぞよろしく。"},
                     {"start": 54.8, "end": 55.3, "text": "2"},
-                    {"start": 55.4, "end": 59.4, "text": "山田さんの部屋は何回ですか?"},
-                    {"start": 59.4, "end": 63.4, "text": "3回です。"},
+                    {"start": 55.4, "end": 59.4, "text": "山田さんの部屋は何階ですか?"},
+                    {"start": 59.4, "end": 63.4, "text": "三階です。"},
                     {"start": 70.0, "end": 70.3, "text": "3"},
-                    {"start": 70.4, "end": 72.4, "text": "奥には?"},
+                    {"start": 70.4, "end": 72.4, "text": "お国は?"},
+                    {"start": 72.4, "end": 74.4, "text": "スペインです。"},
                 ],
             }
 
@@ -778,14 +1090,14 @@ class TranscribeListeningTests(unittest.TestCase):
             self.assertIn("セクション4", result)
             self.assertIn("1\nA：はじめまして、渡辺⓪です。\nB：田中⓪です。どうぞよろしく。", result)
             self.assertIn("2\nA：山田⓪さんの部屋②は何階ですか？\nB：三階です。", result)
-            self.assertIn("3\nお国は？", result)
+            self.assertIn("3\nA：お国は？\nB：スペインです。", result)
             self.assertIn(MODULE.FASTER_WHISPER_MATERIAL_NOTE, result)
             self.assertIn(MODULE.DIALOGUE_MATERIAL_NOTE_SUFFIX, result)
 
-    def test_shadowing_normalization_handles_context_homophones(self) -> None:
-        self.assertEqual(MODULE.normalize_shadowing_text("山田さんの部屋は何回ですか?"), "山田さんの部屋は何階ですか？")
-        self.assertEqual(MODULE.normalize_shadowing_text("3回です。"), "三階です。")
-        self.assertEqual(MODULE.normalize_shadowing_text("奥には?"), "お国は？")
+    def test_structural_normalization_does_not_apply_material_specific_word_rewrites(self) -> None:
+        self.assertEqual(MODULE.normalize_structured_text("山田さんの部屋は何回ですか?"), "山田さんの部屋は何回ですか？")
+        self.assertEqual(MODULE.normalize_structured_text("３回です。"), "3回です。")
+        self.assertEqual(MODULE.normalize_structured_text("奥には?"), "奥には？")
 
     def test_default_invocation_uses_listenkit_generate_markdown(self) -> None:
         expected_payload = {
@@ -803,8 +1115,9 @@ class TranscribeListeningTests(unittest.TestCase):
             output_path.with_suffix(".json").write_text(json.dumps(expected_payload), encoding="utf-8")
             return mock.Mock(returncode=0, stdout=str(output_path), stderr="")
 
-        with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
-            payload = MODULE.invoke_listenkit(Path("/tmp/audio.mp3"), "ja-JP", "auto", {"FASTER_WHISPER_PYTHON": "/tmp/fw/bin/python"})
+        with mock.patch.object(MODULE, "preflight_listenkit_generate_tooling"):
+            with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
+                payload = MODULE.invoke_listenkit(Path("/tmp/audio.mp3"), "ja-JP", "auto", {"FASTER_WHISPER_PYTHON": "/tmp/fw/bin/python"})
 
         command = run_mock.call_args.args[0]
         env = run_mock.call_args.kwargs["env"]
@@ -817,6 +1130,53 @@ class TranscribeListeningTests(unittest.TestCase):
         self.assertIn("--auto-init", command)
         self.assertEqual(env["FASTER_WHISPER_PYTHON"], "/tmp/fw/bin/python")
         self.assertEqual(payload["engine"], "faster-whisper")
+
+    def test_local_invocation_can_persist_listenkit_artifacts(self) -> None:
+        expected_payload = {
+            "engine": "faster-whisper",
+            "locale": "ja-JP",
+            "language": "Japanese",
+            "full_text": "ok",
+            "segments": [],
+            "timing_complete": True,
+        }
+
+        def fake_run(command, **kwargs):
+            output_path = Path(command[command.index("--output") + 1])
+            output_path.write_text("# transcript\n", encoding="utf-8")
+            output_path.with_suffix(".json").write_text(json.dumps(expected_payload), encoding="utf-8")
+            return mock.Mock(returncode=0, stdout=str(output_path), stderr="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "artifacts"
+            with mock.patch.object(MODULE, "preflight_listenkit_generate_tooling"):
+                with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run):
+                    MODULE.invoke_listenkit(
+                        Path("/tmp/audio.mp3"),
+                        "ja-JP",
+                        "auto",
+                        artifact_dir=artifact_dir,
+                        artifact_stem="audio",
+                    )
+
+            self.assertTrue((artifact_dir / "audio.faster-whisper.listenkit.md").exists())
+            self.assertTrue((artifact_dir / "audio.faster-whisper.listenkit.json").exists())
+
+    def test_intensive_preflight_requires_audio_and_export_tooling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio = Path(tmpdir) / "attach" / "20.mp3"
+            audio.parent.mkdir()
+            audio.write_bytes(b"audio")
+            listenkit_root = Path(tmpdir) / "ListenKit"
+            cli = listenkit_root / "cli"
+            cli.mkdir(parents=True)
+            generate = cli / "generate-markdown.sh"
+            generate.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            generate.chmod(0o755)
+
+            with mock.patch.dict(MODULE.os.environ, {"LISTENKIT_ROOT": str(listenkit_root)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "audio-slice export CLI"):
+                    MODULE.preflight_listening_audio_chain(audio, intensive=True)
 
     def test_default_invocation_forces_huggingface_offline_when_small_model_is_cached(self) -> None:
         expected_payload = {
@@ -840,8 +1200,9 @@ class TranscribeListeningTests(unittest.TestCase):
             snapshot.mkdir(parents=True)
             (snapshot / "model.bin").write_bytes(b"cached")
             with mock.patch.dict(MODULE.os.environ, {"HF_HOME": str(hf_home)}, clear=True):
-                with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
-                    MODULE.invoke_listenkit(Path("/tmp/audio.mp3"), "ja-JP", "auto")
+                with mock.patch.object(MODULE, "preflight_listenkit_generate_tooling"):
+                    with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
+                        MODULE.invoke_listenkit(Path("/tmp/audio.mp3"), "ja-JP", "auto")
 
         env = run_mock.call_args.kwargs["env"]
         self.assertEqual(env["HF_HUB_OFFLINE"], "1")
@@ -864,8 +1225,9 @@ class TranscribeListeningTests(unittest.TestCase):
             return mock.Mock(returncode=0, stdout=str(output_path), stderr="")
 
         with mock.patch.dict(MODULE.os.environ, {"LISTENKIT_ROOT": "/tmp/listenkit"}, clear=True):
-            with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
-                payload = MODULE.invoke_listenkit(Path("/tmp/audio.mp3"), "ja-JP", "apple")
+            with mock.patch.object(MODULE, "preflight_listenkit_generate_tooling"):
+                with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
+                    payload = MODULE.invoke_listenkit(Path("/tmp/audio.mp3"), "ja-JP", "apple")
 
         command = run_mock.call_args.args[0]
         self.assertEqual(command[1], "/tmp/listenkit/cli/generate-markdown.sh")
@@ -908,15 +1270,16 @@ class TranscribeListeningTests(unittest.TestCase):
                 (audio_dir / f"{output_path.stem}.{audio_format}").write_bytes(b"audio")
                 return mock.Mock(returncode=0, stdout=str(output_path), stderr="")
 
-            with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
-                result = MODULE.process_url(
-                    "https://www.youtube.com/watch?v=abc123",
-                    output_dir,
-                    None,
-                    "ja-JP",
-                    "数字の読み方",
-                    False,
-                )
+            with mock.patch.object(MODULE, "preflight_listenkit_generate_tooling"):
+                with mock.patch.object(MODULE.subprocess, "run", side_effect=fake_run) as run_mock:
+                    result = MODULE.process_url(
+                        "https://www.youtube.com/watch?v=abc123",
+                        output_dir,
+                        None,
+                        "ja-JP",
+                        "数字の読み方",
+                        False,
+                    )
 
             command = run_mock.call_args_list[0].args[0]
             self.assertIn("--url", command)
@@ -931,8 +1294,8 @@ class TranscribeListeningTests(unittest.TestCase):
             self.assertIn("電話番号の読み方です。", rendered)
             self.assertIn("来源 URL：<https://www.youtube.com/watch?v=abc123>", rendered)
             self.assertIn("Source URL: https://www.youtube.com/watch?v=abc123", result)
-            self.assertTrue((output_dir / "artifacts/youtube_abc123_4b91d82f.listenkit.md").exists())
-            self.assertTrue((output_dir / "artifacts/youtube_abc123_4b91d82f.listenkit.json").exists())
+            self.assertTrue((output_dir / "artifacts/youtube_abc123_4b91d82f.faster-whisper.listenkit.md").exists())
+            self.assertTrue((output_dir / "artifacts/youtube_abc123_4b91d82f.faster-whisper.listenkit.json").exists())
 
     def test_audio_in_attach_generates_note_in_material_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -941,7 +1304,7 @@ class TranscribeListeningTests(unittest.TestCase):
             attach_dir = material_dir / "attach"
             attach_dir.mkdir(parents=True)
             audio_path = attach_dir / "manabo_cz99.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             payload = {
                 "full_text": "これは新しい素材です。",
                 "segments": [
@@ -966,7 +1329,7 @@ class TranscribeListeningTests(unittest.TestCase):
             audio_dir = root / "Shadowing_初中級" / "Unit1"
             audio_dir.mkdir(parents=True)
             audio_path = audio_dir / "04.mp3"
-            audio_path.write_bytes(b"")
+            audio_path.write_bytes(b"audio")
             note_path = audio_dir / "04_田中です.md"
             note_path.write_text(
                 "\n".join(
@@ -1014,11 +1377,23 @@ class TranscribeListeningTests(unittest.TestCase):
             MODULE.Chunk(start=4.0, end=5.0, text="お国は？"),
             MODULE.Chunk(start=5.0, end=6.0, text="スペインです。"),
         ]
-        rendered, dialogue_mode = MODULE.render_dialogue_script_section([], chunks, True)
+        rendered, dialogue_mode = MODULE.render_dialogue_script_section(
+            [],
+            chunks,
+            MODULE.SliceProfile("dialogue", "numbered", "auto", "included", 0.0),
+        )
         self.assertTrue(dialogue_mode)
         self.assertIn("7\nA：お名前は？\nB：ペドロです。\nA：お国は？\nB：スペインです。", rendered)
 
-    def test_setup_offline_dictionary_check_reports_static_cache(self) -> None:
+    def test_setup_python_target_is_abi_specific(self) -> None:
+        cache_dir = Path("/tmp/dict-cache")
+
+        self.assertEqual(
+            SETUP_MODULE.python_target(cache_dir, "cpython-314"),
+            cache_dir / "python" / "cpython-314",
+        )
+
+    def test_setup_offline_dictionary_check_rejects_static_only_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             cache_dir = root / "dict-cache"
@@ -1028,20 +1403,55 @@ class TranscribeListeningTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            spec = importlib.util.spec_from_file_location("setup_offline_dictionary", SETUP_MODULE_PATH)
-            setup_module = importlib.util.module_from_spec(spec)
-            assert spec.loader is not None
-            spec.loader.exec_module(setup_module)
-
             stdout = StringIO()
-            with mock.patch.object(sys, "argv", ["setup-offline-dictionary", "--check"]):
+            with mock.patch.object(sys, "argv", ["setup-offline-dictionary", "--check", "--python", sys.executable]):
                 with mock.patch.dict(os.environ, {"JP_LISTENING_DICT_DIR": str(cache_dir)}, clear=False):
                     with mock.patch("sys.stdout", stdout):
-                        exit_code = setup_module.main()
+                        exit_code = SETUP_MODULE.main()
 
-            self.assertEqual(exit_code, 0)
+            self.assertEqual(exit_code, 1)
             self.assertIn(str(cache_dir), stdout.getvalue())
             self.assertIn("accent_map.json", stdout.getvalue())
+            self.assertIn(sys.implementation.cache_tag, stdout.getvalue())
+
+    def test_setup_offline_dictionary_ignores_wrong_abi_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            wrong_target = cache_dir / "python" / "cpython-312"
+            wrong_target.mkdir(parents=True)
+            (wrong_target / "fugashi.py").write_text("raise RuntimeError('wrong ABI used')\n", encoding="utf-8")
+
+            ok, messages = SETUP_MODULE.check_cache(cache_dir, sys.executable)
+
+            self.assertFalse(ok)
+            self.assertIn(sys.implementation.cache_tag, "\n".join(messages))
+            self.assertIn("not ready", "\n".join(messages))
+
+    def test_setup_offline_dictionary_rejects_missing_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            (cache_dir / "python" / sys.implementation.cache_tag).mkdir(parents=True)
+
+            ok, messages = SETUP_MODULE.check_cache(cache_dir, sys.executable)
+
+            self.assertFalse(ok)
+            self.assertIn("not ready", "\n".join(messages))
+
+    def test_setup_offline_dictionary_rejects_broken_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            target = cache_dir / "python" / sys.implementation.cache_tag
+            target.mkdir(parents=True)
+            extension_suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+            (target / f"fugashi{extension_suffix}").write_bytes(b"not a mach-o extension")
+            (target / "unidic_lite.py").write_text("DICDIR = '/tmp'\n", encoding="utf-8")
+
+            ok, messages = SETUP_MODULE.check_cache(cache_dir, sys.executable)
+
+            self.assertFalse(ok)
+            rendered = "\n".join(messages)
+            self.assertIn("not ready", rendered)
+            self.assertIn(str(target), rendered)
 
 
 if __name__ == "__main__":

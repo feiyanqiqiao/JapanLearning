@@ -54,36 +54,104 @@ def static_accent_map_path(cache_dir: Path) -> Path:
     return cache_dir / "accent_map.json"
 
 
-def python_target(cache_dir: Path) -> Path:
-    return cache_dir / "python"
-
-
-def import_from_cache(cache_dir: Path) -> tuple[bool, str]:
-    target = python_target(cache_dir)
-    if target.exists():
-        sys.path.insert(0, str(target))
+def python_runtime_info(python_executable: str) -> dict[str, str]:
+    code = (
+        "import json, sys; "
+        "print(json.dumps({'executable': sys.executable, 'version': sys.version.split()[0], "
+        "'cache_tag': sys.implementation.cache_tag}))"
+    )
     try:
-        import fugashi  # type: ignore
-        import unidic_lite  # type: ignore
+        result = subprocess.run(
+            [python_executable, "-I", "-c", code],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Unable to inspect Python runtime {python_executable}: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Unable to inspect Python runtime {python_executable}: {detail}")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Python runtime returned invalid metadata: {result.stdout.strip()}") from exc
+    if not payload.get("cache_tag"):
+        raise RuntimeError(f"Python runtime did not report an ABI cache tag: {python_executable}")
+    return {key: str(value) for key, value in payload.items()}
 
-        tagger = fugashi.Tagger(f"-d {unidic_lite.DICDIR}")
-        words = list(tagger("公園を散歩します。"))
-        parsed = [str(word.surface) for word in words]
-        if not parsed:
-            return False, "fugashi loaded but did not parse the sample sentence."
-        accents = []
-        for word in words:
-            marks = accent_marks_from_type(str(getattr(word.feature, "aType", "") or ""))
-            if marks:
-                accents.append(f"{word.surface}{marks}")
-        suffix = f"; sample accents: {' / '.join(accents)}" if accents else "; no sample accent candidates"
-        return True, f"fugashi + unidic-lite ready; sample tokens: {' / '.join(parsed)}{suffix}"
-    except Exception as exc:
-        return False, f"Python dictionary packages are not ready: {exc}"
+
+def python_target(cache_dir: Path, cache_tag: str) -> Path:
+    return cache_dir / "python" / cache_tag
 
 
-def check_cache(cache_dir: Path) -> tuple[bool, list[str]]:
+def import_from_cache(cache_dir: Path, runtime: dict[str, str]) -> tuple[bool, str]:
+    target = python_target(cache_dir, runtime["cache_tag"])
+    code = r'''
+import json
+import re
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import fugashi
+import unidic_lite
+
+tagger = fugashi.Tagger(f"-d {unidic_lite.DICDIR}")
+words = list(tagger("公園を散歩します。"))
+tokens = [str(word.surface) for word in words]
+marks = "⓪①②③④⑤⑥⑦⑧⑨"
+accents = []
+for word in words:
+    values = re.findall(r"\d+", str(getattr(word.feature, "aType", "") or ""))
+    rendered = "/".join(dict.fromkeys(marks[int(value)] for value in values if int(value) < len(marks)))
+    if rendered:
+        accents.append(f"{word.surface}{rendered}")
+print(json.dumps({"tokens": tokens, "accents": accents}, ensure_ascii=False))
+'''
+    try:
+        result = subprocess.run(
+            [runtime["executable"], "-I", "-c", code, str(target)],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"Python dictionary health check failed: {exc}"
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        return False, f"Python dictionary packages are not ready: {detail}"
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False, f"Python dictionary health check returned invalid output: {result.stdout.strip()}"
+    tokens = [str(item) for item in payload.get("tokens", [])]
+    accents = [str(item) for item in payload.get("accents", [])]
+    if not tokens:
+        return False, "fugashi loaded but did not parse the sample sentence."
+    if not accents:
+        return False, "fugashi loaded but returned no sample accent candidates."
+    return True, f"fugashi + unidic-lite ready; sample tokens: {' / '.join(tokens)}; sample accents: {' / '.join(accents)}"
+
+
+def check_cache(cache_dir: Path, python_executable: str) -> tuple[bool, list[str]]:
     messages = [f"cache_dir: {cache_dir}"]
+    try:
+        runtime = python_runtime_info(python_executable)
+    except RuntimeError as exc:
+        return False, messages + [str(exc)]
+    target = python_target(cache_dir, runtime["cache_tag"])
+    messages.extend(
+        [
+            f"python: {runtime['executable']}",
+            f"version: {runtime['version']}",
+            f"abi_tag: {runtime['cache_tag']}",
+            f"python_target: {target}",
+        ]
+    )
     accent_map = static_accent_map_path(cache_dir)
     if accent_map.exists():
         try:
@@ -95,14 +163,14 @@ def check_cache(cache_dir: Path) -> tuple[bool, list[str]]:
         else:
             return False, messages + ["accent_map.json must contain a JSON object."]
 
-    package_ready, package_message = import_from_cache(cache_dir)
+    package_ready, package_message = import_from_cache(cache_dir, runtime)
     messages.append(package_message)
-    if accent_map.exists() or package_ready:
+    if package_ready:
         return True, messages
     return False, messages + ["No usable offline dictionary found."]
 
 
-def install_command(args: argparse.Namespace, cache_dir: Path) -> list[str]:
+def install_command(args: argparse.Namespace, cache_dir: Path, runtime: dict[str, str]) -> list[str]:
     return [
         args.python,
         "-m",
@@ -110,7 +178,7 @@ def install_command(args: argparse.Namespace, cache_dir: Path) -> list[str]:
         "install",
         "--upgrade",
         "--target",
-        str(python_target(cache_dir)),
+        str(python_target(cache_dir, runtime["cache_tag"])),
         "fugashi",
         "unidic-lite",
     ]
@@ -121,11 +189,16 @@ def main() -> int:
     cache_dir = cache_dir_from_args(args)
 
     if args.check:
-        ok, messages = check_cache(cache_dir)
+        ok, messages = check_cache(cache_dir, args.python)
         print("\n".join(messages))
         return 0 if ok else 1
 
-    command = install_command(args, cache_dir)
+    try:
+        runtime = python_runtime_info(args.python)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    command = install_command(args, cache_dir, runtime)
     if args.dry_run:
         print(" ".join(command))
         return 0
@@ -134,7 +207,7 @@ def main() -> int:
     result = subprocess.run(command, check=False)
     if result.returncode != 0:
         return result.returncode
-    ok, messages = check_cache(cache_dir)
+    ok, messages = check_cache(cache_dir, args.python)
     print("\n".join(messages))
     return 0 if ok else 1
 

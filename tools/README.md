@@ -52,17 +52,24 @@ jp-listening-script-generator
 - 通用轉寫能力：`../ListenKit/cli/generate-markdown.sh`
 - 通用時間範圍切片能力：`../ListenKit/cli/export-audio-slices.py`
 - 離線詞典快取：由 `setup_offline_dictionary.py` 維護。
-- Python runtime：Apple Silicon macOS 預設優先使用 `/opt/homebrew/bin/python3`；需要覆蓋時設定 `JP_LISTENING_PYTHON`。
+- Python runtime：Apple Silicon macOS 固定使用 `/opt/homebrew/bin/python3.14`；需要覆蓋時設定 `JP_LISTENING_PYTHON`。ListenKit `.venv` 也由同一個 3.14 runtime 建立，faster-whisper import 健康檢查有 60 秒上限。
 
 #### 精聽學習語塊
 
 精聽稿統一使用學習語塊，不直接把 ASR chunks 當作切片單位：
 
-- 一般精聽材料預設按自然句切片。
-- 編號 Shadowing 材料預設按完整對話組切片，報號只作為邊界。
+- 路由依據是腳本內容，不是資料夾或檔名；`Shadowing` 路徑不會強制套用對話規則。
+- `dialogue/numbered` 按完整報號對話組切片，報號屬於該組，作為該 `SNN` 的第一段音頻與文本。
+- `dialogue/exchange` 按完整問答交換切片；可靠且中間停頓不超過 `1.0` 秒的四輪問答保留為一組，否則使用兩輪 A/B。
+- `sentence/sentence` 按自然句切片。
 - 自動切分不可靠時，使用 `--slice-manifest PATH` 提供人工校正後的時間範圍。
+- 使用 `--slice-profile auto|dialogue|sentence` 覆蓋自動分類；優先級為 CLI 覆蓋、reviewed manifest metadata、自動內容判斷。
 
-生成器將 manifest 寫入素材目錄下的 `artifacts/<audio_stem>.slices.json`，再交給 ListenKit 導出 `attach/<audio_stem>_SNN.m4a`。`segment_count`、學習包區塊、embed 和實際非空文件數量必須一致。
+生成器會先做錄音鏈前置檢查：來源音頻必須存在且非空，ListenKit 的轉寫與切片 CLI 必須可用，精聽切片還需要 `ffmpeg`/`ffprobe`。本地音頻與 URL 輸入都會把 ListenKit 原始 `.listenkit.md/.json` 保存到素材目錄的 `artifacts/`，避免只留下最終稿而無法回查。
+
+生成器將 manifest 寫入素材目錄下的 `artifacts/<audio_stem>.slices.json`，並保存 `slice_profile` 的類型、分組、來源、編號策略和 padding。預設路徑中標記為 `source: manifest` 的檔案視為已人工 review，重跑時沿用其 profile 和時間範圍；`source: auto|cli` 則可重新分類。之後交給 ListenKit 導出 `attach/<audio_stem>_SNN.m4a`。精聽切片一律不得互相重疊；`dialogue/numbered` 使用 `0.0` 秒 padding，其他 profile 使用前後各 `0.5` 秒安全 padding，但不能跨入相鄰片段。導出報告與製作記錄也保存最終 profile。`segment_count`、學習包區塊、embed 和實際非空文件數量必須一致。
+
+通用文本清洗只處理標點、空白與全半角數字，不按路徑套用教材專用詞語修正。`何回→何階`、`奥には→お国は` 等內容校正必須進入 reviewed transcript 或 manifest。
 
 #### 常用句邊界
 
@@ -95,14 +102,14 @@ jp-listening-script-generator
 常用命令：
 
 ```bash
-python3 tools/listening-transcribe-official/setup_offline_dictionary.py --check
-python3 tools/listening-transcribe-official/setup_offline_dictionary.py --install
+/opt/homebrew/bin/python3.14 tools/listening-transcribe-official/setup_offline_dictionary.py --python /opt/homebrew/bin/python3.14 --check
+/opt/homebrew/bin/python3.14 tools/listening-transcribe-official/setup_offline_dictionary.py --python /opt/homebrew/bin/python3.14 --install
 ```
 
 依賴：
 
 - Python
-- Vault 外部快取目錄：預設為 `~/Library/Caches/jp-listening-dicts`
+- Vault 外部快取目錄：預設為 `~/Library/Caches/jp-listening-dicts`；Python 套件按 ABI 放在 `python/<cache_tag>`，3.14 為 `python/cpython-314`，根目錄 `accent_map.json` 保持跨版本共用。
 - 可用 `JP_LISTENING_DICT_DIR` 覆蓋預設位置。
 
 ### 測試
