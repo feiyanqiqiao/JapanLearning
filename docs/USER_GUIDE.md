@@ -231,6 +231,18 @@ export LISTENKIT_ROOT=/path/to/ListenKit
 
 ListenKit 负责通用音视频转写。LingoTrace 负责把转写结果变成学习笔记和复习材料。
 
+两个项目使用彼此独立的 Python 3.14 虚拟环境，不能共享或跨环境加载 Python 包：
+
+```bash
+# 在 LingoTrace 根目录初始化分词和重音环境
+codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh
+
+# 检查 LingoTrace、ListenKit、JSON 与媒体工具的完整链路
+codex-skills/jp-listening-script-generator/scripts/check-listening-chain.sh
+```
+
+正常转写不会临时安装依赖。环境缺失时，命令会停止并给出明确的初始化命令。详细边界与升级规则见 `docs/listening-runtime-isolation.md`。
+
 ## 9. 安全边界
 
 请把公开仓库和私人学习内容分开。

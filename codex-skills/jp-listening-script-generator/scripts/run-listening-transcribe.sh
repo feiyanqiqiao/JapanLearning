@@ -22,13 +22,20 @@ if [[ -z "${ROOT}" ]]; then
   exit 1
 fi
 
-PYTHON_BIN="${JP_LISTENING_PYTHON:-}"
-if [[ -z "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="/opt/homebrew/bin/python3.14"
-fi
+PYTHON_BIN="${LINGOTRACE_LISTENING_PYTHON:-${JP_LISTENING_PYTHON:-${HOME}/Library/Caches/LingoTrace/venvs/cpython-314/bin/python}}"
+INIT_SCRIPT="${ROOT}/codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh"
+SETUP_SCRIPT="${ROOT}/tools/listening-transcribe-official/setup_offline_dictionary.py"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "Listening transcription requires Python 3.14 at ${PYTHON_BIN}. Set JP_LISTENING_PYTHON only for an intentional override." >&2
+  echo "LingoTrace listening runtime is missing or not executable: ${PYTHON_BIN}" >&2
+  echo "Repair: ${INIT_SCRIPT}" >&2
+  exit 1
+fi
+
+if ! CHECK_OUTPUT="$("${PYTHON_BIN}" "${SETUP_SCRIPT}" --python "${PYTHON_BIN}" --check 2>&1)"; then
+  print -r -- "${CHECK_OUTPUT}" >&2
+  echo "LingoTrace listening runtime is unhealthy." >&2
+  echo "Repair: ${INIT_SCRIPT}" >&2
   exit 1
 fi
 

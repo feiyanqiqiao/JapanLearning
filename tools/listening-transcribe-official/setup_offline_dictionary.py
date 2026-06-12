@@ -4,25 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 
-CIRCLED_ACCENT_MARKS = "⓪①②③④⑤⑥⑦⑧⑨"
-ACCENT_TYPE_TO_MARK = {str(index): mark for index, mark in enumerate(CIRCLED_ACCENT_MARKS)}
-
-
-def accent_marks_from_type(value: str) -> str | None:
-    marks = [
-        ACCENT_TYPE_TO_MARK[item]
-        for item in re.findall(r"\d+", value or "")
-        if item in ACCENT_TYPE_TO_MARK
-    ]
-    if not marks:
-        return None
-    return "/".join(dict.fromkeys(marks))
+EXPECTED_PYTHON = (3, 14)
+EXPECTED_PACKAGES = {"fugashi": "1.5.2", "unidic-lite": "1.0.8"}
+REQUIREMENTS_PATH = Path(__file__).with_name("requirements-listening.txt")
 
 
 def default_cache_dir() -> Path:
@@ -35,12 +24,12 @@ def default_cache_dir() -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="setup-offline-dictionary",
-        description="Prepare the offline Japanese dictionary cache for listening learning packages.",
+        description="Install or check LingoTrace's project-local Japanese dictionary runtime.",
     )
     action = parser.add_mutually_exclusive_group(required=True)
-    action.add_argument("--check", action="store_true", help="Check whether an offline dictionary cache is usable.")
-    action.add_argument("--install", action="store_true", help="Install fugashi and unidic-lite into the cache.")
-    action.add_argument("--dry-run", action="store_true", help="Print the install command without running it.")
+    action.add_argument("--check", action="store_true")
+    action.add_argument("--install", action="store_true")
+    action.add_argument("--dry-run", action="store_true")
     parser.add_argument("--cache-dir", type=Path, default=None)
     parser.add_argument("--python", default=sys.executable)
     return parser.parse_args()
@@ -54,11 +43,23 @@ def static_accent_map_path(cache_dir: Path) -> Path:
     return cache_dir / "accent_map.json"
 
 
-def python_runtime_info(python_executable: str) -> dict[str, str]:
+def runtime_python_version(runtime: dict[str, object]) -> tuple[int, int] | None:
+    if runtime.get("major") is not None and runtime.get("minor") is not None:
+        return int(runtime["major"]), int(runtime["minor"])
+    try:
+        major, minor, *_ = str(runtime["version"]).split(".")
+        return int(major), int(minor)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def python_runtime_info(python_executable: str) -> dict[str, object]:
     code = (
         "import json, sys; "
         "print(json.dumps({'executable': sys.executable, 'version': sys.version.split()[0], "
-        "'cache_tag': sys.implementation.cache_tag}))"
+        "'major': sys.version_info.major, 'minor': sys.version_info.minor, "
+        "'cache_tag': sys.implementation.cache_tag, 'prefix': sys.prefix, "
+        "'base_prefix': sys.base_prefix, 'in_venv': sys.prefix != sys.base_prefix}))"
     )
     try:
         result = subprocess.run(
@@ -75,32 +76,22 @@ def python_runtime_info(python_executable: str) -> dict[str, str]:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         raise RuntimeError(f"Unable to inspect Python runtime {python_executable}: {detail}")
     try:
-        payload = json.loads(result.stdout)
+        return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Python runtime returned invalid metadata: {result.stdout.strip()}") from exc
-    if not payload.get("cache_tag"):
-        raise RuntimeError(f"Python runtime did not report an ABI cache tag: {python_executable}")
-    return {key: str(value) for key, value in payload.items()}
 
 
-def python_target(cache_dir: Path, cache_tag: str) -> Path:
-    return cache_dir / "python" / cache_tag
-
-
-def import_from_cache(cache_dir: Path, runtime: dict[str, str]) -> tuple[bool, str]:
-    target = python_target(cache_dir, runtime["cache_tag"])
+def import_from_runtime(runtime: dict[str, object]) -> tuple[bool, str]:
     code = r'''
+import importlib.metadata
 import json
 import re
-import sys
 
-sys.path.insert(0, sys.argv[1])
 import fugashi
 import unidic_lite
 
 tagger = fugashi.Tagger(f"-d {unidic_lite.DICDIR}")
 words = list(tagger("公園を散歩します。"))
-tokens = [str(word.surface) for word in words]
 marks = "⓪①②③④⑤⑥⑦⑧⑨"
 accents = []
 for word in words:
@@ -108,16 +99,23 @@ for word in words:
     rendered = "/".join(dict.fromkeys(marks[int(value)] for value in values if int(value) < len(marks)))
     if rendered:
         accents.append(f"{word.surface}{rendered}")
-print(json.dumps({"tokens": tokens, "accents": accents}, ensure_ascii=False))
+print(json.dumps({
+    "tokens": [str(word.surface) for word in words],
+    "accents": accents,
+    "versions": {
+        "fugashi": importlib.metadata.version("fugashi"),
+        "unidic-lite": importlib.metadata.version("unidic-lite"),
+    },
+}, ensure_ascii=False))
 '''
     try:
         result = subprocess.run(
-            [runtime["executable"], "-I", "-c", code, str(target)],
+            [str(runtime["executable"]), "-I", "-c", code],
             check=False,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=60,
+            timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"Python dictionary health check failed: {exc}"
@@ -128,60 +126,61 @@ print(json.dumps({"tokens": tokens, "accents": accents}, ensure_ascii=False))
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
         return False, f"Python dictionary health check returned invalid output: {result.stdout.strip()}"
-    tokens = [str(item) for item in payload.get("tokens", [])]
+    versions = payload.get("versions", {})
+    if versions != EXPECTED_PACKAGES:
+        return False, f"Dictionary package versions do not match requirements: {versions}"
     accents = [str(item) for item in payload.get("accents", [])]
-    if not tokens:
-        return False, "fugashi loaded but did not parse the sample sentence."
-    if not accents:
-        return False, "fugashi loaded but returned no sample accent candidates."
-    return True, f"fugashi + unidic-lite ready; sample tokens: {' / '.join(tokens)}; sample accents: {' / '.join(accents)}"
+    required = {"公園⓪", "散歩⓪", "し⓪"}
+    if not required.issubset(accents):
+        return False, f"Dictionary sample accents are incomplete: {' / '.join(accents) or 'none'}"
+    tokens = [str(item) for item in payload.get("tokens", [])]
+    return True, (
+        "fugashi + unidic-lite ready; "
+        f"sample tokens: {' / '.join(tokens)}; sample accents: {' / '.join(accents)}"
+    )
 
 
-def check_cache(cache_dir: Path, python_executable: str) -> tuple[bool, list[str]]:
+def check_runtime(cache_dir: Path, python_executable: str) -> tuple[bool, list[str]]:
     messages = [f"cache_dir: {cache_dir}"]
     try:
         runtime = python_runtime_info(python_executable)
     except RuntimeError as exc:
         return False, messages + [str(exc)]
-    target = python_target(cache_dir, runtime["cache_tag"])
     messages.extend(
         [
             f"python: {runtime['executable']}",
             f"version: {runtime['version']}",
             f"abi_tag: {runtime['cache_tag']}",
-            f"python_target: {target}",
+            f"venv: {runtime['prefix']}",
         ]
     )
+    if runtime_python_version(runtime) != EXPECTED_PYTHON:
+        return False, messages + ["LingoTrace listening runtime requires Python 3.14."]
+    if not runtime.get("in_venv"):
+        return False, messages + ["LingoTrace dictionary packages must be installed in a virtual environment."]
+    if "/Library/Mobile Documents/" in str(runtime.get("prefix", "")):
+        return False, messages + [
+            "LingoTrace native packages cannot run from an iCloud-backed virtual environment. "
+            "Run init-listening-runtime.sh to create the local Cache runtime."
+        ]
+
     accent_map = static_accent_map_path(cache_dir)
     if accent_map.exists():
         try:
             payload = json.loads(accent_map.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             return False, messages + [f"accent_map.json invalid: {exc}"]
-        if isinstance(payload, dict):
-            messages.append(f"accent_map.json entries: {len(payload)}")
-        else:
+        if not isinstance(payload, dict):
             return False, messages + ["accent_map.json must contain a JSON object."]
+        messages.append(f"accent_map.json entries: {len(payload)}")
 
-    package_ready, package_message = import_from_cache(cache_dir, runtime)
+    package_ready, package_message = import_from_runtime(runtime)
     messages.append(package_message)
-    if package_ready:
-        return True, messages
-    return False, messages + ["No usable offline dictionary found."]
+    return package_ready, messages
 
 
-def install_command(args: argparse.Namespace, cache_dir: Path, runtime: dict[str, str]) -> list[str]:
-    return [
-        args.python,
-        "-m",
-        "pip",
-        "install",
-        "--upgrade",
-        "--target",
-        str(python_target(cache_dir, runtime["cache_tag"])),
-        "fugashi",
-        "unidic-lite",
-    ]
+def install_command(args: argparse.Namespace) -> list[str]:
+    return [args.python, "-m", "pip", "install", "-r", str(REQUIREMENTS_PATH)]
 
 
 def main() -> int:
@@ -189,7 +188,7 @@ def main() -> int:
     cache_dir = cache_dir_from_args(args)
 
     if args.check:
-        ok, messages = check_cache(cache_dir, args.python)
+        ok, messages = check_runtime(cache_dir, args.python)
         print("\n".join(messages))
         return 0 if ok else 1
 
@@ -198,16 +197,29 @@ def main() -> int:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    command = install_command(args, cache_dir, runtime)
+    if runtime_python_version(runtime) != EXPECTED_PYTHON or not runtime.get("in_venv"):
+        print(
+            "Refusing to install outside a Python 3.14 virtual environment. "
+            "Run codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh.",
+            file=sys.stderr,
+        )
+        return 1
+    if "/Library/Mobile Documents/" in str(runtime.get("prefix", "")):
+        print(
+            "Refusing to install native packages into an iCloud-backed virtual environment. "
+            "Run init-listening-runtime.sh to create the local Cache runtime.",
+            file=sys.stderr,
+        )
+        return 1
+
+    command = install_command(args)
     if args.dry_run:
         print(" ".join(command))
         return 0
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(command, check=False)
     if result.returncode != 0:
         return result.returncode
-    ok, messages = check_cache(cache_dir, args.python)
+    ok, messages = check_runtime(cache_dir, args.python)
     print("\n".join(messages))
     return 0 if ok else 1
 

@@ -1,5 +1,4 @@
 import importlib.util
-import importlib.machinery
 import json
 import os
 import subprocess
@@ -25,52 +24,46 @@ assert SETUP_SPEC.loader is not None
 sys.modules[SETUP_SPEC.name] = SETUP_MODULE
 SETUP_SPEC.loader.exec_module(SETUP_MODULE)
 WRAPPER_PATH = Path(__file__).resolve().parents[3] / "codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh"
+INIT_RUNTIME_PATH = WRAPPER_PATH.with_name("init-listening-runtime.sh")
+CHECK_CHAIN_PATH = WRAPPER_PATH.with_name("check-listening-chain.sh")
+REQUIREMENTS_PATH = Path(__file__).resolve().parents[1] / "requirements-listening.txt"
 
 
 class TranscribeListeningTests(unittest.TestCase):
-    def test_wrapper_defaults_to_homebrew_python314(self) -> None:
+    def test_wrapper_defaults_to_local_cache_virtualenv(self) -> None:
         wrapper = WRAPPER_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('/opt/homebrew/bin/python3.14', wrapper)
-        self.assertNotIn('/opt/homebrew/bin/python3.12', wrapper)
+        self.assertIn('${HOME}/Library/Caches/LingoTrace/venvs/cpython-314/bin/python', wrapper)
+        self.assertNotIn('${ROOT}/.venv', wrapper)
+        self.assertNotIn('/opt/homebrew/bin/python3.14', wrapper)
 
-    def test_wrapper_uses_jp_listening_python_override(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            vault_root = Path(__file__).resolve().parents[3]
-            listening_dir = vault_root / "学习系统/听力"
-            created_listening_dir = not listening_dir.exists()
-            listening_dir.mkdir(parents=True, exist_ok=True)
-            fake_python = root / "python"
-            argv_log = root / "argv.log"
-            fake_python.write_text(
-                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$ARGV_LOG\"\n",
-                encoding="utf-8",
-            )
-            fake_python.chmod(0o755)
-            env = os.environ.copy()
-            env["JP_LISTENING_PYTHON"] = str(fake_python)
-            env["ARGV_LOG"] = str(argv_log)
+    def test_wrapper_supports_explicit_runtime_override_without_fallback(self) -> None:
+        wrapper = WRAPPER_PATH.read_text(encoding="utf-8")
 
-            try:
-                result = subprocess.run(
-                    ["zsh", str(WRAPPER_PATH), "--help"],
-                    cwd=vault_root,
-                    check=False,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env,
-                )
-            finally:
-                if created_listening_dir:
-                    listening_dir.rmdir()
-                    listening_dir.parent.rmdir()
+        self.assertIn("LINGOTRACE_LISTENING_PYTHON", wrapper)
+        self.assertIn("JP_LISTENING_PYTHON", wrapper)
+        self.assertIn("init-listening-runtime.sh", wrapper)
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            argv = argv_log.read_text(encoding="utf-8")
-            self.assertIn("tools/listening-transcribe-official/transcribe_listening.py", argv)
-            self.assertIn("--help", argv)
+    def test_runtime_requirements_only_pin_direct_dictionary_dependencies(self) -> None:
+        requirements = [
+            line.strip()
+            for line in REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+        self.assertEqual(requirements, ["fugashi==1.5.2", "unidic-lite==1.0.8"])
+
+    def test_runtime_init_and_chain_check_are_explicit(self) -> None:
+        init_script = INIT_RUNTIME_PATH.read_text(encoding="utf-8")
+        check_script = CHECK_CHAIN_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('python3.14', init_script)
+        self.assertIn('requirements-listening.txt', init_script)
+        self.assertIn('Library/Caches/LingoTrace/venvs/cpython-314', init_script)
+        self.assertNotIn('ln -s', init_script)
+        self.assertIn('${LISTENKIT_ROOT}/cli/check-runtime.sh', check_script)
+        self.assertIn('ffmpeg', check_script)
+        self.assertIn('ffprobe', check_script)
 
     def test_confirmed_accent_index_uses_configured_focus_vocab_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -240,14 +233,11 @@ class TranscribeListeningTests(unittest.TestCase):
 
         self.assertIn("公園⓪を散歩します。", package)
 
-    def test_offline_dictionary_uses_runtime_abi_cache(self) -> None:
+    def test_offline_dictionary_uses_active_virtualenv_not_abi_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             dictionary = MODULE.OfflineAccentDictionary(Path(tmpdir))
 
-            self.assertEqual(
-                dictionary.python_target,
-                Path(tmpdir) / "python" / sys.implementation.cache_tag,
-            )
+            self.assertFalse(hasattr(dictionary, "python_target"))
 
     def test_learning_package_marks_unknown_focus_terms_as_pending_confirmation(self) -> None:
         package = MODULE.build_learning_package(
@@ -1035,19 +1025,24 @@ class TranscribeListeningTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("Batch scan mode is not supported", stderr.getvalue())
 
-    def test_main_fails_when_offline_dictionary_is_missing(self) -> None:
+    def test_main_fails_when_offline_dictionary_runtime_is_unhealthy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             audio_path = root / "audio.mp3"
             audio_path.write_bytes(b"audio")
             stderr = StringIO()
-            with mock.patch.dict(os.environ, {"JP_LISTENING_DICT_DIR": str(root / "missing-dict")}, clear=False):
-                with mock.patch.object(sys, "argv", ["transcribe-listening", str(audio_path), "--dry-run"]):
-                    with mock.patch("sys.stderr", stderr):
-                        exit_code = MODULE.main()
+            with mock.patch.object(
+                MODULE.OfflineAccentDictionary,
+                "validate_runtime",
+                side_effect=MODULE.OfflineDictionaryError("Offline dictionary runtime validation failed"),
+            ):
+                with mock.patch.dict(os.environ, {"JP_LISTENING_DICT_DIR": str(root / "dict")}, clear=False):
+                    with mock.patch.object(sys, "argv", ["transcribe-listening", str(audio_path), "--dry-run"]):
+                        with mock.patch("sys.stderr", stderr):
+                            exit_code = MODULE.main()
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Offline dictionary is not ready", stderr.getvalue())
+        self.assertIn("Offline dictionary runtime validation failed", stderr.getvalue())
 
     def test_auto_engine_uses_listenkit_default_for_numbered_dialogue(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1127,7 +1122,7 @@ class TranscribeListeningTests(unittest.TestCase):
         self.assertIn("--language", command)
         self.assertIn("Japanese", command)
         self.assertNotIn("--engine", command)
-        self.assertIn("--auto-init", command)
+        self.assertNotIn("--auto-init", command)
         self.assertEqual(env["FASTER_WHISPER_PYTHON"], "/tmp/fw/bin/python")
         self.assertEqual(payload["engine"], "faster-whisper")
 
@@ -1385,54 +1380,84 @@ class TranscribeListeningTests(unittest.TestCase):
         self.assertTrue(dialogue_mode)
         self.assertIn("7\nA：お名前は？\nB：ペドロです。\nA：お国は？\nB：スペインです。", rendered)
 
-    def test_setup_python_target_is_abi_specific(self) -> None:
-        cache_dir = Path("/tmp/dict-cache")
+    def test_setup_install_command_targets_selected_virtualenv(self) -> None:
+        args = mock.Mock(python="/tmp/LingoTrace/.venv/bin/python")
+        command = SETUP_MODULE.install_command(args)
 
-        self.assertEqual(
-            SETUP_MODULE.python_target(cache_dir, "cpython-314"),
-            cache_dir / "python" / "cpython-314",
-        )
+        self.assertEqual(command[:4], [args.python, "-m", "pip", "install"])
+        self.assertIn(str(REQUIREMENTS_PATH), command)
+        self.assertNotIn("--target", command)
 
-    def test_setup_offline_dictionary_check_rejects_static_only_cache(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            cache_dir = root / "dict-cache"
-            cache_dir.mkdir()
-            (cache_dir / "accent_map.json").write_text(
-                json.dumps({"公園": "こうえん⓪"}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-
-            stdout = StringIO()
-            with mock.patch.object(sys, "argv", ["setup-offline-dictionary", "--check", "--python", sys.executable]):
-                with mock.patch.dict(os.environ, {"JP_LISTENING_DICT_DIR": str(cache_dir)}, clear=False):
-                    with mock.patch("sys.stdout", stdout):
-                        exit_code = SETUP_MODULE.main()
-
-            self.assertEqual(exit_code, 1)
-            self.assertIn(str(cache_dir), stdout.getvalue())
-            self.assertIn("accent_map.json", stdout.getvalue())
-            self.assertIn(sys.implementation.cache_tag, stdout.getvalue())
-
-    def test_setup_offline_dictionary_ignores_wrong_abi_cache(self) -> None:
+    def test_setup_offline_dictionary_rejects_non_virtualenv(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir)
-            wrong_target = cache_dir / "python" / "cpython-312"
-            wrong_target.mkdir(parents=True)
-            (wrong_target / "fugashi.py").write_text("raise RuntimeError('wrong ABI used')\n", encoding="utf-8")
-
-            ok, messages = SETUP_MODULE.check_cache(cache_dir, sys.executable)
+            runtime = {
+                "executable": sys.executable,
+                "version": "3.14.3",
+                "cache_tag": "cpython-314",
+                "in_venv": False,
+                "prefix": "/opt/homebrew",
+                "base_prefix": "/opt/homebrew",
+            }
+            with mock.patch.object(SETUP_MODULE, "python_runtime_info", return_value=runtime):
+                ok, messages = SETUP_MODULE.check_runtime(cache_dir, sys.executable)
 
             self.assertFalse(ok)
-            self.assertIn(sys.implementation.cache_tag, "\n".join(messages))
-            self.assertIn("not ready", "\n".join(messages))
+            self.assertIn("virtual environment", "\n".join(messages))
+
+    def test_setup_offline_dictionary_rejects_icloud_native_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            runtime = {
+                "executable": "/Users/test/Library/Mobile Documents/vault/.venv/bin/python",
+                "version": "3.14.3",
+                "cache_tag": "cpython-314",
+                "in_venv": True,
+                "prefix": "/Users/test/Library/Mobile Documents/vault/.venv",
+                "base_prefix": "/opt/homebrew",
+            }
+            with mock.patch.object(SETUP_MODULE, "python_runtime_info", return_value=runtime):
+                with mock.patch.object(SETUP_MODULE, "import_from_runtime") as import_mock:
+                    ok, messages = SETUP_MODULE.check_runtime(cache_dir, sys.executable)
+
+            self.assertFalse(ok)
+            self.assertIn("iCloud", "\n".join(messages))
+            import_mock.assert_not_called()
+
+    def test_setup_install_refuses_icloud_native_runtime_before_pip(self) -> None:
+        runtime = {
+            "executable": "/Users/test/Library/Mobile Documents/vault/.venv/bin/python",
+            "version": "3.14.3",
+            "cache_tag": "cpython-314",
+            "in_venv": True,
+            "prefix": "/Users/test/Library/Mobile Documents/vault/.venv",
+            "base_prefix": "/opt/homebrew",
+        }
+        stderr = StringIO()
+        with mock.patch.object(SETUP_MODULE, "python_runtime_info", return_value=runtime):
+            with mock.patch.object(SETUP_MODULE.subprocess, "run") as run_mock:
+                with mock.patch.object(sys, "argv", ["setup-offline-dictionary", "--install"]):
+                    with mock.patch("sys.stderr", stderr):
+                        exit_code = SETUP_MODULE.main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("iCloud", stderr.getvalue())
+        run_mock.assert_not_called()
 
     def test_setup_offline_dictionary_rejects_missing_packages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir)
-            (cache_dir / "python" / sys.implementation.cache_tag).mkdir(parents=True)
-
-            ok, messages = SETUP_MODULE.check_cache(cache_dir, sys.executable)
+            runtime = {
+                "executable": sys.executable,
+                "version": "3.14.3",
+                "cache_tag": "cpython-314",
+                "in_venv": True,
+                "prefix": "/tmp/LingoTrace/.venv",
+                "base_prefix": "/opt/homebrew",
+            }
+            with mock.patch.object(SETUP_MODULE, "python_runtime_info", return_value=runtime):
+                with mock.patch.object(SETUP_MODULE, "import_from_runtime", return_value=(False, "packages are not ready")):
+                    ok, messages = SETUP_MODULE.check_runtime(cache_dir, sys.executable)
 
             self.assertFalse(ok)
             self.assertIn("not ready", "\n".join(messages))
@@ -1440,18 +1465,45 @@ class TranscribeListeningTests(unittest.TestCase):
     def test_setup_offline_dictionary_rejects_broken_extension(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir)
-            target = cache_dir / "python" / sys.implementation.cache_tag
-            target.mkdir(parents=True)
-            extension_suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
-            (target / f"fugashi{extension_suffix}").write_bytes(b"not a mach-o extension")
-            (target / "unidic_lite.py").write_text("DICDIR = '/tmp'\n", encoding="utf-8")
-
-            ok, messages = SETUP_MODULE.check_cache(cache_dir, sys.executable)
+            runtime = {
+                "executable": sys.executable,
+                "version": "3.14.3",
+                "cache_tag": "cpython-314",
+                "in_venv": True,
+                "prefix": "/tmp/LingoTrace/.venv",
+                "base_prefix": "/opt/homebrew",
+            }
+            with mock.patch.object(SETUP_MODULE, "python_runtime_info", return_value=runtime):
+                with mock.patch.object(
+                    SETUP_MODULE,
+                    "import_from_runtime",
+                    return_value=(False, "Python dictionary packages are not ready: dlopen failed"),
+                ):
+                    ok, messages = SETUP_MODULE.check_runtime(cache_dir, sys.executable)
 
             self.assertFalse(ok)
             rendered = "\n".join(messages)
             self.assertIn("not ready", rendered)
-            self.assertIn(str(target), rendered)
+            self.assertIn("dlopen failed", rendered)
+
+    def test_listenkit_json_accepts_schema_v1_and_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for name, payload in (
+                ("v1.json", {"schema_version": 1, "segments": []}),
+                ("legacy.json", {"segments": []}),
+            ):
+                path = root / name
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                self.assertEqual(MODULE.load_listenkit_json(path), payload)
+
+    def test_listenkit_json_rejects_unknown_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "future.json"
+            path.write_text(json.dumps({"schema_version": 2, "segments": []}), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "unsupported schema_version: 2"):
+                MODULE.load_listenkit_json(path)
 
 
 if __name__ == "__main__":

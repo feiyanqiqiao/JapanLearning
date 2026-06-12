@@ -51,8 +51,8 @@ jp-listening-script-generator
 - Skill wrapper：`codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh`
 - 通用轉寫能力：`../ListenKit/cli/generate-markdown.sh`
 - 通用時間範圍切片能力：`../ListenKit/cli/export-audio-slices.py`
-- 離線詞典快取：由 `setup_offline_dictionary.py` 維護。
-- Python runtime：Apple Silicon macOS 固定使用 `/opt/homebrew/bin/python3.14`；需要覆蓋時設定 `JP_LISTENING_PYTHON`。ListenKit `.venv` 也由同一個 3.14 runtime 建立，faster-whisper import 健康檢查有 60 秒上限。
+- 離線詞典套件：由 `setup_offline_dictionary.py` 安裝及檢查於 LingoTrace 自己的本機 Cache runtime。
+- Python runtime：正常執行固定使用 `~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python`，避免從 iCloud 路徑載入原生擴展時卡住或讓 symlink 被改名。Homebrew `/opt/homebrew/bin/python3.14` 只負責初始化。ListenKit 使用獨立的 `ListenKit/.venv`，兩者不得跨環境 import 套件。
 
 #### 精聽學習語塊
 
@@ -83,41 +83,45 @@ jp-listening-script-generator
 
 用途：
 
-- 檢查離線日語詞典快取是否可用。
-- 安裝 `fugashi` 與 `unidic-lite` 到 Vault 外部快取目錄。
+- 檢查 LingoTrace Python 3.14 環境與離線日語詞典是否可用。
+- 安裝固定版本的 `fugashi` 與 `unidic-lite` 到 LingoTrace 本機 Cache runtime。
 - 為聽力筆記與詞彙維護提供重音候選。
 
 何時使用：
 
 - 首次使用聽力轉寫工具前。
-- 聽力工具提示離線詞典缺失時。
+- 聽力工具提示 LingoTrace runtime 缺失或損壞時。
 - 需要確認分詞與重音候選是否正常時。
 
 何時不要使用：
 
 - 不要用它生成聽力筆記。
-- 不要把詞典快取寫入 Vault 或提交到 Git。
+- 不要把 runtime 或外部靜態詞典快取提交到 Git。
 - 不要把本地候選直接當作人工確認結果。
 
 常用命令：
 
 ```bash
-/opt/homebrew/bin/python3.14 tools/listening-transcribe-official/setup_offline_dictionary.py --python /opt/homebrew/bin/python3.14 --check
-/opt/homebrew/bin/python3.14 tools/listening-transcribe-official/setup_offline_dictionary.py --python /opt/homebrew/bin/python3.14 --install
+codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh
+~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python tools/listening-transcribe-official/setup_offline_dictionary.py --python ~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python --check
+codex-skills/jp-listening-script-generator/scripts/check-listening-chain.sh
 ```
 
 依賴：
 
-- Python
-- Vault 外部快取目錄：預設為 `~/Library/Caches/jp-listening-dicts`；Python 套件按 ABI 放在 `python/<cache_tag>`，3.14 為 `python/cpython-314`，根目錄 `accent_map.json` 保持跨版本共用。
+- Homebrew Python 3.14 作為初始化器。
+- LingoTrace 直接使用本機 Cache 中的 Python 套件；直接依賴只由 `requirements-listening.txt` 固定。
+- Vault 外部快取目錄：預設為 `~/Library/Caches/jp-listening-dicts`，只保留跨版本靜態資料，例如根目錄 `accent_map.json`。
 - 可用 `JP_LISTENING_DICT_DIR` 覆蓋預設位置。
+
+完整環境邊界與升級規則見 `docs/listening-runtime-isolation.md`。
 
 ### 測試
 
 執行測試：
 
 ```bash
-python3 -m unittest tools/listening-transcribe-official/tests/test_transcribe_listening.py
+~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python -m unittest discover -s tools/listening-transcribe-official/tests -p 'test_*.py'
 ```
 
 ## Git Workflow Checks

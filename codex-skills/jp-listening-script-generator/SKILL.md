@@ -85,7 +85,7 @@ The generator delegates transcript acquisition to ListenKit's Markdown workflow 
 - in numbered dialogue, the spoken group number belongs to its own `SNN` clip and text block; no clip may include the previous or next group's number or dialogue
 - use `--slice-profile auto|dialogue|sentence` when automatic classification needs an explicit override; precedence is CLI override, reviewed manifest metadata, then automatic content detection
 
-The vault wrapper passes ListenKit's `--auto-init` flag for the default/faster-whisper route. On first use, ListenKit may create `../ListenKit/.venv` and install faster-whisper; do not create `.venv` manually from the vault parent directory.
+The vault wrapper never passes ListenKit's `--auto-init` flag. Initialize both project runtimes explicitly before transcription; a normal transcription run must not install or upgrade packages.
 
 ```bash
 zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/Shadowing_初中級/Unit1/attach/04.mp3" --engine faster-whisper --locale ja-JP --dry-run
@@ -97,7 +97,7 @@ Set `FASTER_WHISPER_PYTHON=/path/to/python` only when intentionally overriding L
 
 For faster-whisper on Apple Silicon, use Homebrew Python 3.14. Initialize ListenKit with `LISTENKIT_FASTER_WHISPER_BOOTSTRAP_PYTHON=/opt/homebrew/bin/python3.14`; faster-whisper import checks have a 60-second limit and fail clearly instead of waiting indefinitely.
 
-Set `JP_LISTENING_PYTHON=/path/to/python3` only when intentionally overriding the vault wrapper's Python runtime. On Apple Silicon macOS, the wrapper requires `/opt/homebrew/bin/python3.14` by default so the generator and offline dictionary use one runtime and ABI.
+LingoTrace uses `~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python` directly. Native extensions and runtime symlinks must not live inside the iCloud-backed Vault. ListenKit uses `../ListenKit/.venv/bin/python`. Homebrew Python 3.14 is only the bootstrap for creating those environments. Set `LINGOTRACE_LISTENING_PYTHON=/path/to/python` only for an intentional LingoTrace override. `JP_LISTENING_PYTHON` remains a legacy compatibility override.
 
 The current local test setup uses:
 
@@ -115,30 +115,35 @@ The skill does not implement generic ASR itself. Always call the local Markdown 
 zsh codex-skills/jp-listening-script-generator/scripts/run-listening-transcribe.sh "学习系统/听力/中級を学ぼう/attach/manabo_cz16.mp3"
 ```
 
-## Offline Dictionary Setup
+## Runtime And Offline Dictionary Setup
 
-The listening note renderer uses a local dictionary cache for word selection, reading, and accent candidates. The default cache is outside the vault:
+Initialize the LingoTrace environment explicitly:
+
+```bash
+codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh
+```
+
+The listening note renderer loads `fugashi==1.5.2` and `unidic-lite==1.0.8` only from the LingoTrace runtime under `~/Library/Caches/LingoTrace/venvs/cpython-314`. The separate dictionary-data cache is reserved for static accent data:
 
 - default: `~/Library/Caches/jp-listening-dicts`
-- Python packages: `~/Library/Caches/jp-listening-dicts/python/cpython-314`
 - cross-version static data: `~/Library/Caches/jp-listening-dicts/accent_map.json`
 - override: `JP_LISTENING_DICT_DIR=/path/to/cache`
 
-Check the cache before first use:
+Check the project runtime before first use:
 
 ```bash
-/opt/homebrew/bin/python3.14 tools/listening-transcribe-official/setup_offline_dictionary.py --python /opt/homebrew/bin/python3.14 --check
+~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python tools/listening-transcribe-official/setup_offline_dictionary.py --python ~/Library/Caches/LingoTrace/venvs/cpython-314/bin/python --check
 ```
 
 The check output should include both sample tokens and sample accent candidates such as `公園⓪`; tokenization alone is not enough to prove accent lookup is wired into the generator.
 
-Install the offline dictionary packages when the check says the cache is not ready:
+Run the complete read-only LingoTrace / ListenKit check with:
 
 ```bash
-/opt/homebrew/bin/python3.14 tools/listening-transcribe-official/setup_offline_dictionary.py --python /opt/homebrew/bin/python3.14 --install
+codex-skills/jp-listening-script-generator/scripts/check-listening-chain.sh
 ```
 
-The installer writes Python packages such as `fugashi` and `unidic-lite` under the cache directory, not inside the Obsidian vault or the skill folder. The generator must fail clearly when the cache is missing; do not silently generate guessed accent data.
+The initializer writes Python packages only into the dedicated LingoTrace runtime. The generator must fail clearly when the runtime is missing, uses the wrong Python version, cannot load its C extension, or returns no accent candidates. Do not silently generate guessed accent data or add package directories to `sys.path`.
 
 For URL input, choose the target listening directory explicitly:
 
@@ -169,7 +174,7 @@ The explicit Apple Speech route may launch a macOS permission flow through Liste
 
 That combination avoids the usual retry pattern of “sandbox run fails first, then ask for approval”.
 
-The default/faster-whisper route is a normal ListenKit CLI subprocess. It does not launch a GUI permission flow, but first use can install Python packages into `../ListenKit/.venv` and later download model files through faster-whisper/Hugging Face caches.
+The default/faster-whisper route is a normal ListenKit CLI subprocess. It does not launch a GUI permission flow. Initialize `../ListenKit/.venv` separately before use; transcription may download a missing model through faster-whisper/Hugging Face caches, but it must not install Python packages.
 
 ## Output Contract
 

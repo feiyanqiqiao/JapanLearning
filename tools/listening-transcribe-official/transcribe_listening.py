@@ -188,7 +188,6 @@ class StaticAccentDictionary:
 class OfflineAccentDictionary(StaticAccentDictionary):
     def __init__(self, cache_dir: Path) -> None:
         self.cache_dir = cache_dir
-        self.python_target = cache_dir / "python" / sys.implementation.cache_tag
         entries = load_static_accent_entries(cache_dir)
         super().__init__(entries)
         self._tagger = None
@@ -208,8 +207,6 @@ class OfflineAccentDictionary(StaticAccentDictionary):
     def _load_tagger(self):
         if self._tagger is not None or self._tagger_error is not None:
             return self._tagger
-        if self.python_target.exists():
-            sys.path.insert(0, str(self.python_target))
         try:
             import fugashi  # type: ignore
             import unidic_lite  # type: ignore
@@ -221,13 +218,14 @@ class OfflineAccentDictionary(StaticAccentDictionary):
         return self._tagger
 
     def runtime_details(self) -> str:
+        vault_root = Path(__file__).resolve().parents[2]
+        init_script = vault_root / "codex-skills/jp-listening-script-generator/scripts/init-listening-runtime.sh"
         return (
             f"Python: {sys.executable}\n"
             f"Version: {sys.version.split()[0]}\n"
             f"ABI tag: {sys.implementation.cache_tag}\n"
-            f"Dictionary target: {self.python_target}\n"
-            f"Repair: `{sys.executable} {Path(__file__).with_name('setup_offline_dictionary.py')} "
-            f"--python {sys.executable} --install`"
+            f"Virtual environment: {sys.prefix}\n"
+            f"Repair: `{init_script}`"
         )
 
     def validate_runtime(self) -> list[str]:
@@ -317,24 +315,8 @@ def load_static_accent_entries(cache_dir: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in payload.items() if str(key).strip() and str(value).strip()}
 
 
-def offline_dictionary_ready(cache_dir: Path) -> bool:
-    return (cache_dir / "python" / sys.implementation.cache_tag).is_dir()
-
-
 def load_offline_dictionary(required: bool = True) -> StaticAccentDictionary:
     cache_dir = default_dictionary_cache_dir()
-    if not offline_dictionary_ready(cache_dir):
-        if required:
-            raise OfflineDictionaryError(
-                "Offline dictionary is not ready for this Python ABI.\n"
-                f"Python: {sys.executable}\n"
-                f"Version: {sys.version.split()[0]}\n"
-                f"ABI tag: {sys.implementation.cache_tag}\n"
-                f"Checked: {cache_dir / 'python' / sys.implementation.cache_tag}\n"
-                f"Repair: `{sys.executable} {Path(__file__).with_name('setup_offline_dictionary.py')} "
-                f"--python {sys.executable} --install`"
-            )
-        return StaticAccentDictionary(load_static_accent_entries(cache_dir))
     dictionary = OfflineAccentDictionary(cache_dir)
     try:
         dictionary.validate_runtime()
@@ -507,6 +489,9 @@ def load_listenkit_json(path: Path) -> dict:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"ListenKit transcript JSON is invalid: {path}: {exc}") from exc
+    schema_version = payload.get("schema_version")
+    if schema_version not in (None, 1):
+        raise RuntimeError(f"ListenKit transcript uses unsupported schema_version: {schema_version}")
     if payload.get("error"):
         error = payload["error"]
         if isinstance(error, dict):
@@ -554,8 +539,6 @@ def invoke_listenkit(
         ]
         if engine != "auto":
             command.extend(["--engine", engine])
-        if engine != "apple":
-            command.append("--auto-init")
         result = subprocess.run(
             command,
             check=False,
